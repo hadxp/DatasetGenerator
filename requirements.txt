@@ -1,0 +1,5 @@
+transformers
+pillow
+accelerate
+timm
+einops
