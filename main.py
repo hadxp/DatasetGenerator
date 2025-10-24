@@ -1,7 +1,10 @@
-#!/usr/bin/env python3
 """
-Image Processing Script
-Enhanced version for Florence-2 with better prompt handling and text replacement
+DatasetGeneration Script
+including image preprocessing via the "mohsin-riad/upscaler-ultra" upscaler model and
+Florence-2 for caption generation, text replacement with triggerword in generated caption,
+
+usage:
+python main.py [source_dir] [target_dir] [triggerword]
 """
 
 import os
@@ -10,16 +13,22 @@ import json
 import argparse
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
-from transformers import AutoModelForCausalLM, AutoProcessor
+from diffusers import DiffusionPipeline 
+from transformers import AutoModelForCausalLM, AutoProcessor, Swin2SRForImageSuperResolution, Swin2SRImageProcessor
+import numpy as np
 
 import torch
-import transformers
+# These imports are used by the florence2 model, and kept for completeness, as the code would crash without them being avaliable
+import transformers 
 import accelerate
 import einops
 import timm
+
+torch_dtype = torch.float32
+torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 def setup_argparse():
     """Set up command line argument parsing."""
@@ -43,35 +52,6 @@ def setup_argparse():
     parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for beam search')
     
     return parser
-
-def load_florence2_model():
-    """Load Florence2 model and processor with proper data type handling."""
-    print("Loading Florence2 model...")
-    try:
-        # Use float32 for stability
-        torch_dtype = torch.float32  # Using float32 for better compatibility
-
-        model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
-        )
-
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = model.to(device)
-        model.eval()  # Set to evaluation mode
-
-        processor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True
-        )
-
-        print(f"Model loaded on {device} with dtype {torch_dtype}")
-        return model, processor, device
-
-    except Exception as e:
-        print(f"Error loading Florence2 model: {e}")
-        sys.exit(1)
 
 
 def get_image_files(directory: Path) -> List[Path]:
@@ -125,7 +105,6 @@ def generate_caption(
         model,
         processor,
         image_path: Path,
-        device: str,
         task: str = "more_detailed_caption",
         text_input: str = "",
         max_new_tokens: int = 256,
@@ -156,9 +135,9 @@ def generate_caption(
         processed_inputs = {}
         for key, value in inputs.items():
             if value.dtype.is_floating_point:
-                processed_inputs[key] = value.to(device=device, dtype=model_dtype)
+                processed_inputs[key] = value.to(device=torch_device, dtype=model_dtype)
             else:
-                processed_inputs[key] = value.to(device=device)
+                processed_inputs[key] = value.to(device=torch_device)
 
         # Generate caption
         with torch.no_grad():
@@ -212,32 +191,30 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
         "boy": trigger_word,
     }
 
-    # Pronoun replacements
     pronoun_replacements = {
-        "the ": f"the {trigger_word}",
-        "The ": f"The {trigger_word}",
-        "she ": f"the {trigger_word}",
-        "She ": f"The {trigger_word}",
-        "her ": f"the {trigger_word}",
-        "Her ": f"The {trigger_word}",
-        "hers ": f"the {trigger_word}'s",
-        "Hers ": f"The {trigger_word}'s",
-        "he ": f"the {trigger_word}",
-        "He ": f"The {trigger_word}",
-        "him ": f"the {trigger_word}",
-        "Him ": f"The {trigger_word}",
-        "his ": f"the {trigger_word}'s",
-        "His ": f"The {trigger_word}'s",
-        "Tthe": "The",
-        "tthe": "the",
-        f"{trigger_word}{trigger_word}": f" {trigger_word} ",
+        " the ": f" the {trigger_word} ", # Added spaces for safety
+        " The ": f" The {trigger_word} ", 
+        " she ": f" the {trigger_word} ", 
+        " She ": f" The {trigger_word} ", 
+        " her ": f" the {trigger_word}'s ", 
+        " Her ": f" The {trigger_word}'s ", 
+        " hers ": f" the {trigger_word}'s ", 
+        " Hers ": f" The {trigger_word}'s ", 
+        " he ": f" the {trigger_word} ", 
+        " He ": f" The {trigger_word} ", 
+        " him ": f" the {trigger_word} ", 
+        " Him ": f" The {trigger_word} ", 
+        " his ": f" the {trigger_word}'s ", 
+        " His ": f" The {trigger_word}'s ", 
+        f" {trigger_word}{trigger_word} ": f" {trigger_word} ", # Cleanup for double trigger words
     }
 
-    # Apply replacements
+    # Apply gender term replacements first
     processed_caption = caption
     for old, new in replacements.items():
         processed_caption = processed_caption.replace(old, new)
 
+    # Apply pronoun replacements
     for old, new in pronoun_replacements.items():
         processed_caption = processed_caption.replace(old, new)
 
@@ -266,8 +243,85 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
 
     return processed_caption.strip()
 
+def load_florence2_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
+    """Load Florence2 model and processor with proper data type handling."""
+    print("Loading Florence2 model...")
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            "microsoft/Florence-2-large",
+            trust_remote_code=True,
+            torch_dtype=torch_dtype
+        )
 
-def copy_image(source_path: Path, target_dir: Path, filename: str, width: int = 1024, height: int = 1024) -> Optional[str]:
+        model = model.to(torch_device)
+        model.eval()  # Set to evaluation mode
+
+        processor = AutoProcessor.from_pretrained(
+            "microsoft/Florence-2-large",
+            trust_remote_code=True
+        )
+
+        print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
+        return model, processor
+
+    except Exception as e:
+        print(f"Error loading Florence2 model: {e}")
+        sys.exit(1)
+
+def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution]]:
+    """Load the DiffusionPipeline for upscaling."""
+    print("Loading Upscaler-Ultra model...")
+    
+    try:
+        upscale_processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-classical-sr-x2-64", trust_remote_code=True)
+        upscale_model = Swin2SRForImageSuperResolution.from_pretrained(
+            "caidas/swin2SR-classical-sr-x2-64", 
+            trust_remote_code=True, 
+            torch_dtype=torch_dtype 
+        )
+        upscale_model = upscale_model.to(torch_device)
+        print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
+        return upscale_processor, upscale_model
+    except Exception as e:
+        print(f"Warning: Could not load upscaler model. Skipping upscaling. Error: {e}")
+        # Return a mock object or None if upscaler is critical
+        return None 
+
+
+def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution) -> Image:
+    """Sharpen image using Upscaler-Ultra before further processing."""
+    if upscale_processor or upscale_model is None:
+        return Image.open(source_path).convert("RGB")
+        
+    input_image = Image.open(source_path).convert("RGB")
+
+    inputs = upscale_processor(images=input_image, return_tensors="pt")
+    pixel_values = inputs['pixel_values']
+
+    # 3. Run Model
+    with torch.no_grad():
+        outputs = upscale_model(pixel_values=pixel_values)
+
+    # Correct Post-processing
+    # The upscaled tensor is accessed via the 'reconstruction' attribute
+    upscaled_tensor = outputs.reconstruction
+
+    # Move to CPU, remove batch dim (squeeze), clip, and convert to NumPy
+    # The tensor is in (1, C, H, W) format, normalized to [0, 1].
+    upscaled_np = upscaled_tensor.squeeze(0).cpu().clamp(0, 1).numpy()
+
+    # Scale to [0, 255] and change data type to 8-bit integer
+    upscaled_np = (upscaled_np * 255.0).astype(np.uint8)
+
+    # Permute dimensions from (C, H, W) to (H, W, C) for PIL
+    upscaled_np = np.transpose(upscaled_np, (1, 2, 0))
+
+    # Convert NumPy array to PIL Image object
+    upscaled_image = Image.fromarray(upscaled_np)
+    
+    return upscaled_image
+
+def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution, width: int = 1024, height: int = 1024) -> Optional[str]:
     """Copy image to target directory with format conversion to PNG and padding to fit dimensions."""
     try:
         target_path = target_dir / filename
@@ -277,37 +331,38 @@ def copy_image(source_path: Path, target_dir: Path, filename: str, width: int = 
             print(f"  Warning: {filename} already exists, skipping copy")
             return str(target_path)  # Return path even if file exists
 
-        # Open and process image with padding
-        with Image.open(source_path) as img:
-            # Convert to RGB if necessary
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
+        # Open and process image (sharpening happens inside sharpen_image)
+        img = sharpen_image(source_path, upscale_processor, upscale_model)
+        
+        # Convert to RGB if necessary
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
 
-            # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
-            original_width, original_height = img.size
-            width_ratio = width / original_width
-            height_ratio = height / original_height
-            scale_factor = min(width_ratio, height_ratio)
+        # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
+        original_width, original_height = img.size
+        width_ratio = width / original_width
+        height_ratio = height / original_height
+        scale_factor = min(width_ratio, height_ratio)
 
-            # Calculate new dimensions
-            new_width = int(original_width * scale_factor)
-            new_height = int(original_height * scale_factor)
+        # Calculate new dimensions
+        new_width = int(original_width * scale_factor)
+        new_height = int(original_height * scale_factor)
 
-            # Resize image maintaining aspect ratio
-            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        # Resize image maintaining aspect ratio
+        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            # Create new image with target dimensions and white background
-            padded_img = Image.new('RGB', (width, height), (255, 255, 255))  # White background
+        # Create new image with target dimensions and white background
+        padded_img = Image.new('RGB', (width, height), (255, 255, 255))  # White background
 
-            # Calculate position to center the image
-            x_offset = (width - new_width) // 2
-            y_offset = (height - new_height) // 2
+        # Calculate position to center the image
+        x_offset = (width - new_width) // 2
+        y_offset = (height - new_height) // 2
 
-            # Paste resized image onto centered position
-            padded_img.paste(resized_img, (x_offset, y_offset))
+        # Paste resized image onto centered position
+        padded_img.paste(resized_img, (x_offset, y_offset))
 
-            # Save as PNG
-            padded_img.save(target_path, 'PNG')
+        # Save as PNG
+        padded_img.save(target_path, 'PNG')
 
         return str(target_path)
     except Exception as e:
@@ -354,7 +409,10 @@ def main():
         print(f"Using text input: {args.text_input}")
 
     # Load Florence2 model
-    model, processor, device = load_florence2_model()
+    model, processor = load_florence2_model()
+    
+    # Load upscale DiffusionPipeline
+    upscale_processor, upscale_model = load_upscaler_model()
 
     # Process images
     results = []
@@ -368,7 +426,7 @@ def main():
 
         target_filename = f"{i}.png"
         # Copy image to target directory with sequential naming
-        copied_path = copy_image(image_path, target_dir, target_filename)
+        copied_path = copy_image(image_path, target_dir, target_filename, upscale_processor, upscale_model)
         if not copied_path:
             print(f"  ✗ Failed to copy image {image_path.name}")
             continue
@@ -378,7 +436,6 @@ def main():
             model=model,
             processor=processor,
             image_path=image_path,
-            device=device,
             task=task,
             text_input=text_input,
             max_new_tokens=max_new_tokens,
@@ -395,33 +452,27 @@ def main():
                 "control_path": copied_path,
                 "caption": processed_caption,
             }
-
-            if results.__contains__(result_entry):
-                print(f"  Entry for image {image_path.name} already exist")
-                pass
-
+            
             results.append(result_entry)
             successful_processing += 1
-            #print(f"  ✓ Original: {caption[:80]}...")
-            #print(f"  ✓ Processed: {processed_caption[:80]}...")
             print(f"  ✓ Processed")
         else:
             print(f"  ✗ Failed to generate caption for {image_path.name}")
 
-        # write to JSONL file
+    # JSONL write operation
+    if results:
+        print(f"\nWriting {len(results)} results to JSONL: {jsonl_path}")
         with open(jsonl_path, 'w', encoding='utf-8') as f:
             dump = '\n'.join(json.dumps(result, ensure_ascii=False) for result in results)
             f.write(dump)
-            print("Wrote to JSONL file")
 
     # Create text files from results
     print("\nCreating text files from results...")
     for i, result in enumerate(results, 1):
         text_filename = f"{i}.txt"
         text_filepath = os.path.join(target_dir, text_filename)
-        with open(text_filepath, 'w', encoding='utf-8') as f:
-            f.write(result["caption"])
-            print(f"  Created caption file: {text_filename}")
+        Path(text_filepath).write_text(result["caption"], encoding='utf-8')
+        print(f"  Created caption file: {text_filename}")
 
     # Print summary
     print(f"\nProcessing complete!")
