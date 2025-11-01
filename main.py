@@ -33,7 +33,7 @@ torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 def setup_argparse():
     """Set up command line argument parsing."""
     parser = argparse.ArgumentParser(
-        description='Process images and generate captions using Florence2 model'
+        description='Enhance, scale and generate captions (using Florence2) for images'
     )
     parser.add_argument('source_dir', help='Source directory containing images')
     parser.add_argument('target_dir', help='Target directory to save processed images and captions and JSONL file')
@@ -50,6 +50,8 @@ def setup_argparse():
     parser.add_argument('--text-input', default='', help='Additional text input for specific tasks')
     parser.add_argument('--max-new-tokens', type=int, default=256, help='Maximum new tokens for generation')
     parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for beam search')
+    parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
+    parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
     
     return parser
 
@@ -321,7 +323,7 @@ def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, u
     
     return upscaled_image
 
-def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution, width: int = 1024, height: int = 1024) -> Optional[str]:
+def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution, imgwidth: int, imgheight: int) -> Optional[str]:
     """Copy image to target directory with format conversion to PNG and padding to fit dimensions."""
     try:
         target_path = target_dir / filename
@@ -340,8 +342,8 @@ def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_proce
 
         # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
         original_width, original_height = img.size
-        width_ratio = width / original_width
-        height_ratio = height / original_height
+        width_ratio = imgwidth / original_width
+        height_ratio = imgheight / original_height
         scale_factor = min(width_ratio, height_ratio)
 
         # Calculate new dimensions
@@ -352,11 +354,11 @@ def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_proce
         resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
         # Create new image with target dimensions and white background
-        padded_img = Image.new('RGB', (width, height), (255, 255, 255))  # White background
+        padded_img = Image.new('RGB', (imgwidth, imgheight), (255, 255, 255))  # White background
 
         # Calculate position to center the image
-        x_offset = (width - new_width) // 2
-        y_offset = (height - new_height) // 2
+        x_offset = (imgwidth - new_width) // 2
+        y_offset = (imgheight - new_height) // 2
 
         # Paste resized image onto centered position
         padded_img.paste(resized_img, (x_offset, y_offset))
@@ -382,6 +384,8 @@ def main():
     text_input = args.text_input
     max_new_tokens = args.max_new_tokens
     num_beams = args.num_beams
+    imgwidth = args.imgwidth
+    imgheight = args.imgheight
 
     if not source_dir.exists():
         print(f"Error: Source directory '{source_dir}' does not exist.")
@@ -426,7 +430,7 @@ def main():
 
         target_filename = f"{i}.png"
         # Copy image to target directory with sequential naming
-        copied_path = copy_image(image_path, target_dir, target_filename, upscale_processor, upscale_model)
+        copied_path = copy_image(image_path, target_dir, target_filename, upscale_processor, upscale_model, imgwidth, imgheight)
         if not copied_path:
             print(f"  ✗ Failed to copy image {image_path.name}")
             continue
