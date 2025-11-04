@@ -30,14 +30,14 @@ import timm
 torch_dtype = torch.float32
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def setup_argparse():
+def setup_argparse() -> argparse.ArgumentParser:
     """Set up command line argument parsing."""
     parser = argparse.ArgumentParser(
         description='Enhance, scale and generate captions (using Florence2) for images'
     )
     parser.add_argument('source_dir', help='Source directory containing images')
-    parser.add_argument('target_dir', help='Target directory to save processed images and captions and JSONL file')
-    parser.add_argument('triggerword', help='The Triggerword to replace gender terms in captions')
+    parser.add_argument('target_dir', help='Target directory to save processed images and captions')
+    parser.add_argument('triggerword', help='The Triggerword to replace gender terms in generated captions')
     parser.add_argument('--task', default='more_detailed_caption',
                         choices=[
                             'region_caption', 'dense_region_caption', 'region_proposal',
@@ -47,11 +47,12 @@ def setup_argparse():
                             'prompt_gen_mixed_caption', 'prompt_gen_analyze', 'prompt_gen_mixed_caption_plus'
                         ],
                         help='Task type for Florence-2 model')
-    parser.add_argument('--text-input', default='', help='Additional text input for specific tasks')
-    parser.add_argument('--max-new-tokens', type=int, default=256, help='Maximum new tokens for generation')
-    parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for beam search')
+    parser.add_argument('--text-input', default='', help='Additional text input for specific tasks in caption generation')
+    parser.add_argument('--max-new-tokens', type=int, default=256, help='Maximum new tokens for caption generation')
+    parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for caption generation')
     parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
     parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
+    parser.add_argument('--no_jsonl', type=bool, default=False, help='Disable jsonl generation')
     
     return parser
 
@@ -209,6 +210,7 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
         " his ": f" the {trigger_word}'s ", 
         " His ": f" The {trigger_word}'s ", 
         f" {trigger_word}{trigger_word} ": f" {trigger_word} ", # Cleanup for double trigger words
+        " leatthe ": " leather ",
     }
 
     # Apply gender term replacements first
@@ -386,6 +388,7 @@ def main():
     num_beams = args.num_beams
     imgwidth = args.imgwidth
     imgheight = args.imgheight
+    no_jsonl = args.no_jsonl
 
     if not source_dir.exists():
         print(f"Error: Source directory '{source_dir}' does not exist.")
@@ -463,20 +466,21 @@ def main():
         else:
             print(f"  ✗ Failed to generate caption for {image_path.name}")
 
-    # JSONL write operation
-    if results:
-        print(f"\nWriting {len(results)} results to JSONL: {jsonl_path}")
-        with open(jsonl_path, 'w', encoding='utf-8') as f:
-            dump = '\n'.join(json.dumps(result, ensure_ascii=False) for result in results)
-            f.write(dump)
-
-    # Create text files from results
-    print("\nCreating text files from results...")
-    for i, result in enumerate(results, 1):
-        text_filename = f"{i}.txt"
-        text_filepath = os.path.join(target_dir, text_filename)
-        Path(text_filepath).write_text(result["caption"], encoding='utf-8')
-        print(f"  Created caption file: {text_filename}")
+    if no_jsonl:
+        # Create text files from results
+        print("\nCreating text files from results...")
+        for i, result in enumerate(results, 1):
+            text_filename = f"{i}.txt"
+            text_filepath = os.path.join(target_dir, text_filename)
+            Path(text_filepath).write_text(result["caption"], encoding='utf-8')
+            print(f"  Created caption file: {text_filename}")
+    else:
+        # JSONL write operation
+        if results:
+            print(f"\nWriting {len(results)} results to JSONL: {jsonl_path}")
+            with open(jsonl_path, 'w', encoding='utf-8') as f:
+                dump = '\n'.join(json.dumps(result, ensure_ascii=False) for result in results)
+                f.write(dump)
 
     # Print summary
     print(f"\nProcessing complete!")
