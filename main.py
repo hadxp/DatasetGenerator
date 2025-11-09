@@ -485,8 +485,6 @@ def main():
     # Print summary
     print(f"\nProcessing complete!")
     print(f"Successfully processed {successful_processing}/{len(image_files)} images")
-    print(f"Images saved to: {target_dir}")
-    print(f"JSONL file saved to: {jsonl_path}")
 
 if __name__ == "__main__":
     main()
