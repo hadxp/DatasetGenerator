@@ -52,7 +52,7 @@ def setup_argparse() -> argparse.ArgumentParser:
     parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for caption generation')
     parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
     parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
-    parser.add_argument('--no_jsonl', type=bool, default=False, help='Disable jsonl generation')
+    parser.add_argument('--no_jsonl', action='store_true', default=False, help='Disable jsonl generation')
     
     return parser
 
