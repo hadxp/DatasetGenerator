@@ -15,9 +15,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from diffusers import DiffusionPipeline 
-from transformers import AutoModelForCausalLM, AutoProcessor, Swin2SRForImageSuperResolution, Swin2SRImageProcessor
+from transformers import AutoModelForCausalLM, AutoProcessor, Swin2SRForImageSuperResolution, Swin2SRImageProcessor, AutoModelForImageTextToText, AutoTokenizer
 import numpy as np
 
 import torch
@@ -27,8 +27,13 @@ import accelerate
 import einops
 import timm
 
+import warnings
+
 torch_dtype = torch.float32
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# Ignore all warnings
+warnings.filterwarnings("ignore")
 
 def setup_argparse() -> argparse.ArgumentParser:
     """Set up command line argument parsing."""
@@ -38,24 +43,11 @@ def setup_argparse() -> argparse.ArgumentParser:
     parser.add_argument('source_dir', help='Source directory containing images')
     parser.add_argument('target_dir', help='Target directory to save processed images and captions')
     parser.add_argument('triggerword', help='The Triggerword to replace gender terms in generated captions')
-    parser.add_argument('--task', default='more_detailed_caption',
-                        choices=[
-                            'region_caption', 'dense_region_caption', 'region_proposal',
-                            'caption', 'detailed_caption', 'more_detailed_caption',
-                            'caption_to_phrase_grounding', 'referring_expression_segmentation',
-                            'ocr', 'ocr_with_region', 'docvqa', 'prompt_gen_tags',
-                            'prompt_gen_mixed_caption', 'prompt_gen_analyze', 'prompt_gen_mixed_caption_plus'
-                        ],
-                        help='Task type for Florence-2 model')
-    parser.add_argument('--text-input', default='', help='Additional text input for specific tasks in caption generation')
-    parser.add_argument('--max-new-tokens', type=int, default=256, help='Maximum new tokens for caption generation')
-    parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for caption generation')
     parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
     parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
     parser.add_argument('--no_jsonl', action='store_true', default=False, help='Disable jsonl generation')
     
     return parser
-
 
 def get_image_files(directory: Path) -> List[Path]:
     """Get all image files from directory."""
@@ -68,114 +60,71 @@ def get_image_files(directory: Path) -> List[Path]:
 
     return sorted(image_files)
 
-
-def get_task_prompt(task: str) -> str:
-    """Get the appropriate prompt for the given task."""
-    prompts = {
-        'region_caption': '<OD>',
-        'dense_region_caption': '<DENSE_REGION_CAPTION>',
-        'region_proposal': '<REGION_PROPOSAL>',
-        'caption': '<CAPTION>',
-        'detailed_caption': '<DETAILED_CAPTION>',
-        'more_detailed_caption': '<MORE_DETAILED_CAPTION>',
-        'caption_to_phrase_grounding': '<CAPTION_TO_PHRASE_GROUNDING>',
-        'referring_expression_segmentation': '<REFERRING_EXPRESSION_SEGMENTATION>',
-        'ocr': '<OCR>',
-        'ocr_with_region': '<OCR_WITH_REGION>',
-        'docvqa': '<DocVQA>',
-        'prompt_gen_tags': '<GENERATE_TAGS>',
-        'prompt_gen_mixed_caption': '<MIXED_CAPTION>',
-        'prompt_gen_analyze': '<ANALYZE>',
-        'prompt_gen_mixed_caption_plus': '<MIXED_CAPTION_PLUS>',
-    }
-
-    if task not in prompts:
-        raise ValueError(f"Unknown task: {task}. Available tasks: {list(prompts.keys())}")
-
-    return prompts[task]
-
-
-def validate_task_input(task: str, text_input: str) -> None:
-    """Validate if text input is allowed for the given task."""
-    if text_input and task not in ['referring_expression_segmentation', 'caption_to_phrase_grounding', 'docvqa']:
-        raise ValueError(
-            "Text input is only supported for 'referring_expression_segmentation', "
-            "'caption_to_phrase_grounding', and 'docvqa' tasks"
-        )
-
-
-def generate_caption(
-        model,
-        processor,
-        image_path: Path,
-        task: str = "more_detailed_caption",
-        text_input: str = "",
-        max_new_tokens: int = 256,
-        num_beams: int = 3
-) -> Optional[str]:
-    """Generate caption for an image using Florence2 model."""
-
-    # Validate task and input
-    validate_task_input(task, text_input)
-    task_prompt = get_task_prompt(task)
-
-    # Construct final prompt
-    if text_input:
-        prompt = f"{task_prompt} {text_input}"
-    else:
-        prompt = task_prompt
-
+def generate_caption(model: AutoModelForImageTextToText, processor: AutoProcessor, image_path: Path) -> Optional[str]:
+    """Generate caption for an image"""
+    prompt = f"Describe this image in detail use girl instead of names."
+    
     try:
-        # Load and process image
+        # Load and process image 
         image = Image.open(image_path).convert('RGB')
-
-        # Process image and text
-        inputs = processor(text=prompt, images=image, return_tensors="pt")
-
-        # Move all inputs to the same device and data type as model
-        model_dtype = next(model.parameters()).dtype
-
-        processed_inputs = {}
-        for key, value in inputs.items():
-            if value.dtype.is_floating_point:
-                processed_inputs[key] = value.to(device=torch_device, dtype=model_dtype)
-            else:
-                processed_inputs[key] = value.to(device=torch_device)
-
-        # Generate caption
+        messages = [ 
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt}, 
+                ],
+            }
+        ] 
+        
+        # Produce text with image tokens
+        text_inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+            return_tensors="pt",
+        )
+        
+        # Build multimodal inputs (text + image)
+        inputs = processor(
+            images=image,
+            text=text_inputs,
+            return_tensors="pt",
+        ) 
+        
+        # Move inputs to same device/dtype as model
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+        
+        # Generate caption 
         with torch.no_grad():
             generated_ids = model.generate(
-                input_ids=processed_inputs["input_ids"],
-                pixel_values=processed_inputs["pixel_values"],
-                max_new_tokens=max_new_tokens,
-                num_beams=num_beams,
+                **inputs,
+                max_new_tokens=512,
+                num_beams=1,
                 do_sample=False,
-                early_stopping=True,
-                pad_token_id=processor.tokenizer.pad_token_id,
-                eos_token_id=processor.tokenizer.eos_token_id
             )
-
-        # Decode the generated text
+            
+        # Decode the generated text 
         generated_text = processor.batch_decode(
             generated_ids,
-            skip_special_tokens=True
+            skip_special_tokens=True,
         )[0]
+        
+        # Remove everything upto (including) the word "assistant"
+        marker = "assistant"
 
-        # Clean up the generated text - remove the task prompt if present
-        if generated_text.startswith(task_prompt):
-            generated_text = generated_text[len(task_prompt):].strip()
+        # Use find() to get the index of the first occurrence (of the marker)
+        start_index = generated_text.find(marker) + len(marker)
 
-        # Remove any remaining special tokens
-        generated_text = generated_text.replace("<|endoftext|>", "").strip()
-
+        # Slice the string from that index to the end
+        generated_text = generated_text[start_index:]
+        
         return generated_text
-
     except Exception as e:
         print(f"Error processing {image_path}: {e}")
-        import traceback
+        import traceback 
         traceback.print_exc()
         return None
-
 
 def process_caption_text(caption: str, trigger_word: str) -> str:
     """Process and clean the caption text with trigger word replacement."""
@@ -183,7 +132,7 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
         return caption
 
     # Gender term replacements
-    replacements = {
+    gender_replacements = {
         "woman": trigger_word,
         "man": trigger_word,
         "female": trigger_word,
@@ -209,13 +158,17 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
         " Him ": f" The {trigger_word} ", 
         " his ": f" the {trigger_word}'s ", 
         " His ": f" The {trigger_word}'s ", 
+        "This is a medium shot of": "",
+        "his is a medium shot of": "",
+        "shot of": "",
+        "Shot of": "",
         f" {trigger_word}{trigger_word} ": f" {trigger_word} ", # Cleanup for double trigger words
         " leatthe ": " leather ",
     }
 
     # Apply gender term replacements first
     processed_caption = caption
-    for old, new in replacements.items():
+    for old, new in gender_replacements.items():
         processed_caption = processed_caption.replace(old, new)
 
     # Apply pronoun replacements
@@ -237,6 +190,11 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
         "picture of a",
         "picture of the",
         "picture of",
+        "This is a medium shot of",
+        "his is a medium shot of",
+        "shot of",
+        "Shot of",
+        "Of course. Here is a detailed description of the image"
     ]
 
     for phrase in portrait_phrases:
@@ -247,29 +205,21 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
 
     return processed_caption.strip()
 
-def load_florence2_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
-    """Load Florence2 model and processor with proper data type handling."""
-    print("Loading Florence2 model...")
+def load_caption_model() -> Tuple[AutoModelForImageTextToText, AutoProcessor]:
+    """Load Caption model and processor with proper data type handling."""
     try:
-        model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
-        )
+        print("Loading Qwen/Qwen3-VL-2B-Instruct model...")
 
-        model = model.to(torch_device)
-        model.eval()  # Set to evaluation mode
-
-        processor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True
-        )
+        repo_id = "Qwen/Qwen3-VL-2B-Instruct"
+        model = (AutoModelForImageTextToText.from_pretrained(repo_id, device_map="auto", dtype=torch_dtype)
+                 .to(torch_device))
+        processor = AutoProcessor.from_pretrained(repo_id, dtype=torch_dtype)
 
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
-        return model, processor
 
+        return model, processor
     except Exception as e:
-        print(f"Error loading Florence2 model: {e}")
+        print(f"Error loading Caption model: {e}")
         sys.exit(1)
 
 def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution]]:
@@ -281,7 +231,7 @@ def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForIma
         upscale_model = Swin2SRForImageSuperResolution.from_pretrained(
             "caidas/swin2SR-classical-sr-x2-64", 
             trust_remote_code=True, 
-            torch_dtype=torch_dtype 
+            dtype=torch_dtype
         )
         upscale_model = upscale_model.to(torch_device)
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
@@ -289,8 +239,7 @@ def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForIma
     except Exception as e:
         print(f"Warning: Could not load upscaler model. Skipping upscaling. Error: {e}")
         # Return a mock object or None if upscaler is critical
-        return None 
-
+        return None
 
 def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution) -> Image:
     """Sharpen image using Upscaler-Ultra before further processing."""
@@ -337,6 +286,14 @@ def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_proce
 
         # Open and process image (sharpening happens inside sharpen_image)
         img = sharpen_image(source_path, upscale_processor, upscale_model)
+
+        # Enhance contrast
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1.5)
+
+        # Sharpen slightly
+        enhancer = ImageEnhance.Sharpness(img)
+        img = enhancer.enhance(1.2)
         
         # Convert to RGB if necessary
         if img.mode != 'RGB':
@@ -382,10 +339,6 @@ def main():
     source_dir = Path(args.source_dir)
     target_dir = Path(args.target_dir)
     trigger_word = args.triggerword.strip()
-    task = args.task
-    text_input = args.text_input
-    max_new_tokens = args.max_new_tokens
-    num_beams = args.num_beams
     imgwidth = args.imgwidth
     imgheight = args.imgheight
     no_jsonl = args.no_jsonl
@@ -410,13 +363,10 @@ def main():
         sys.exit(1)
 
     print(f"Found {len(image_files)} image files.")
-    print(f"Using task: {args.task}")
     print(f"Using trigger word: {trigger_word}")
-    if args.text_input:
-        print(f"Using text input: {args.text_input}")
 
-    # Load Florence2 model
-    model, processor = load_florence2_model()
+    # Load caption model
+    caption_model, caption_processor = load_caption_model()
     
     # Load upscale DiffusionPipeline
     upscale_processor, upscale_model = load_upscaler_model()
@@ -438,16 +388,11 @@ def main():
             print(f"  ✗ Failed to copy image {image_path.name}")
             continue
 
-        # Generate caption
+        # Generate caption, for the original (not copied) image
         caption = generate_caption(
-            model=model,
-            processor=processor,
-            image_path=image_path,
-            task=task,
-            text_input=text_input,
-            max_new_tokens=max_new_tokens,
-            num_beams=num_beams
-        )
+            model=caption_model,
+            processor=caption_processor,
+            image_path=image_path)
 
         if caption:
             # Process caption with trigger word replacement
@@ -487,4 +432,5 @@ def main():
     print(f"Successfully processed {successful_processing}/{len(image_files)} images")
 
 if __name__ == "__main__":
+    transformers.logging.set_verbosity_error()
     main()
