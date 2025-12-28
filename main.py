@@ -11,9 +11,8 @@ import os
 import sys
 import json
 import argparse
-import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Tuple, TypedDict
 
 from PIL import Image
 from diffusers import DiffusionPipeline 
@@ -36,7 +35,7 @@ def setup_argparse() -> argparse.ArgumentParser:
         description='Enhance, scale and generate captions (using Florence2) for images'
     )
     parser.add_argument('source_dir', help='Source directory containing images')
-    parser.add_argument('target_dir', help='Target directory to save processed images and captions')
+    parser.add_argument('--target_dir', default=None, help='Target directory to save processed images and captions')
     parser.add_argument('triggerword', help='The Triggerword to replace gender terms in generated captions')
     parser.add_argument('--task', default='more_detailed_caption',
                         choices=[
@@ -52,7 +51,10 @@ def setup_argparse() -> argparse.ArgumentParser:
     parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for caption generation')
     parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
     parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
-    parser.add_argument('--no_jsonl', action='store_true', default=False, help='Disable jsonl generation')
+    parser.add_argument('--jsonl', action='store_true', default=False, help='Enable jsonl generation')
+    parser.add_argument('--parquet', action='store_true', default=False, help='Enable parquet generation (no images or captions will be saved)')
+    parser.add_argument('--huggingface_repoid', type=str, default="hadxp/datasets", help='Huggingface repoid to upload the parquet file')
+    parser.add_argument('--huggingface_token', type=str, default=None, help='Huggingface token')
     
     return parser
 
@@ -105,14 +107,14 @@ def validate_task_input(task: str, text_input: str) -> None:
 
 
 def generate_caption(
-        model,
-        processor,
+        model: AutoModelForCausalLM,
+        processor: AutoProcessor,
         image_path: Path,
         task: str = "more_detailed_caption",
         text_input: str = "",
         max_new_tokens: int = 256,
         num_beams: int = 3
-) -> Optional[str]:
+) -> str | None:
     """Generate caption for an image using Florence2 model."""
 
     # Validate task and input
@@ -251,34 +253,33 @@ def load_florence2_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load Florence2 model and processor with proper data type handling."""
     print("Loading Florence2 model...")
     try:
-        model = AutoModelForCausalLM.from_pretrained(
+        model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(
             "microsoft/Florence-2-large",
             trust_remote_code=True,
             torch_dtype=torch_dtype
         )
 
-        model = model.to(torch_device)
+        model = model.to(torch_device) # move the model to cuda
         model.eval()  # Set to evaluation mode
 
-        processor = AutoProcessor.from_pretrained(
+        processor: AutoProcessor = AutoProcessor.from_pretrained(
             "microsoft/Florence-2-large",
             trust_remote_code=True
         )
 
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
         return model, processor
-
     except Exception as e:
         print(f"Error loading Florence2 model: {e}")
         sys.exit(1)
 
-def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution]]:
+def load_upscaler_model() -> Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution] | None:
     """Load the DiffusionPipeline for upscaling."""
     print("Loading Upscaler-Ultra model...")
     
     try:
-        upscale_processor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-classical-sr-x2-64", trust_remote_code=True)
-        upscale_model = Swin2SRForImageSuperResolution.from_pretrained(
+        upscale_processor: Swin2SRImageProcessor = Swin2SRImageProcessor.from_pretrained("caidas/swin2SR-classical-sr-x2-64", trust_remote_code=True)
+        upscale_model: Swin2SRForImageSuperResolution = Swin2SRForImageSuperResolution.from_pretrained(
             "caidas/swin2SR-classical-sr-x2-64", 
             trust_remote_code=True, 
             torch_dtype=torch_dtype 
@@ -292,7 +293,7 @@ def load_upscaler_model() -> Optional[Tuple[Swin2SRImageProcessor, Swin2SRForIma
         return None 
 
 
-def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution) -> Image:
+def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution) -> Image.Image:
     """Sharpen image using Upscaler-Ultra before further processing."""
     if upscale_processor or upscale_model is None:
         return Image.open(source_path).convert("RGB")
@@ -325,53 +326,60 @@ def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor, u
     
     return upscaled_image
 
-def copy_image(source_path: Path, target_dir: Path, filename: str, upscale_processor: Swin2SRImageProcessor, upscale_model: Swin2SRForImageSuperResolution, imgwidth: int, imgheight: int) -> Optional[str]:
+def copy_image(
+    source_path: Path,
+    target_dir: Path,
+    filename: str,
+    upscale_processor: Swin2SRImageProcessor,
+    upscale_model: Swin2SRForImageSuperResolution,
+    imgwidth: int,
+    imgheight: int,
+    save_image: bool = True) -> Path | Image.Image:
     """Copy image to target directory with format conversion to PNG and padding to fit dimensions."""
-    try:
-        target_path = target_dir / filename
+    target_path = target_dir / filename
 
-        # Check if target already exists
-        if target_path.exists():
-            print(f"  Warning: {filename} already exists, skipping copy")
-            return str(target_path)  # Return path even if file exists
+    # Check if target already exists
+    if target_path.exists():
+        print(f"  Warning: {filename} already exists, skipping copy")
+        return target_path  # Return path even if file exists
 
-        # Open and process image (sharpening happens inside sharpen_image)
-        img = sharpen_image(source_path, upscale_processor, upscale_model)
-        
-        # Convert to RGB if necessary
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
+    # Open and process image (sharpening happens inside sharpen_image)
+    img = sharpen_image(source_path, upscale_processor, upscale_model)
+    
+    # Convert to RGB if necessary
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
 
-        # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
-        original_width, original_height = img.size
-        width_ratio = imgwidth / original_width
-        height_ratio = imgheight / original_height
-        scale_factor = min(width_ratio, height_ratio)
+    # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
+    original_width, original_height = img.size
+    width_ratio = imgwidth / original_width
+    height_ratio = imgheight / original_height
+    scale_factor = min(width_ratio, height_ratio)
 
-        # Calculate new dimensions
-        new_width = int(original_width * scale_factor)
-        new_height = int(original_height * scale_factor)
+    # Calculate new dimensions
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
 
-        # Resize image maintaining aspect ratio
-        resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    # Resize image maintaining aspect ratio
+    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-        # Create new image with target dimensions and white background
-        padded_img = Image.new('RGB', (imgwidth, imgheight), (255, 255, 255))  # White background
+    # Create new image with target dimensions and white background
+    padded_img = Image.new('RGB', (imgwidth, imgheight), (255, 255, 255))  # White background
 
-        # Calculate position to center the image
-        x_offset = (imgwidth - new_width) // 2
-        y_offset = (imgheight - new_height) // 2
+    # Calculate position to center the image
+    x_offset = (imgwidth - new_width) // 2
+    y_offset = (imgheight - new_height) // 2
 
-        # Paste resized image onto centered position
-        padded_img.paste(resized_img, (x_offset, y_offset))
+    # Paste resized image onto centered position
+    padded_img.paste(resized_img, (x_offset, y_offset))
 
+    if save_image:
         # Save as PNG
         padded_img.save(target_path, 'PNG')
+        return target_path
+    else:
+        return padded_img
 
-        return str(target_path)
-    except Exception as e:
-        print(f"Error copying {source_path}: {e}")
-        return None
 
 def main():
     # Parse command line arguments
@@ -379,8 +387,8 @@ def main():
     args = parser.parse_args()
 
     # Validate directories
-    source_dir = Path(args.source_dir)
-    target_dir = Path(args.target_dir)
+    source_dir = Path(args.source_dir) # the dir with all images (the "datasets" dir)
+    target_dir = Path(args.target_dir) # the out dir (mostly)
     trigger_word = args.triggerword.strip()
     task = args.task
     text_input = args.text_input
@@ -388,7 +396,18 @@ def main():
     num_beams = args.num_beams
     imgwidth = args.imgwidth
     imgheight = args.imgheight
-    no_jsonl = args.no_jsonl
+    jsonl = args.jsonl
+    parquet = args.parquet
+    huggingface_repoid = args.huggingface_repoid
+    huggingface_token = args.huggingface_token
+    
+    can_upload_to_huggingface = huggingface_token is not None and huggingface_repoid != ""
+    keep_copied_img_in_memory = parquet is not None or can_upload_to_huggingface
+    
+    # if no target_dir is provided, use "out" as standard
+    if target_dir is None:
+        parent_dir = source_dir.parent
+        target_dir = parent_dir / "out"
 
     if not source_dir.exists():
         print(f"Error: Source directory '{source_dir}' does not exist.")
@@ -422,7 +441,7 @@ def main():
     upscale_processor, upscale_model = load_upscaler_model()
 
     # Process images
-    results = []
+    results: List[ResultEntry] | List[InMemoryResultEntry] = []
     jsonl_path = target_dir / "0_dataset.jsonl"
 
     print(f"\nStarting image processing and caption generation...")
@@ -433,7 +452,7 @@ def main():
 
         target_filename = f"{i}.png"
         # Copy image to target directory with sequential naming
-        copied_path = copy_image(image_path, target_dir, target_filename, upscale_processor, upscale_model, imgwidth, imgheight)
+        copied_path = copy_image(image_path, target_dir, target_filename, upscale_processor, upscale_model, imgwidth, imgheight, save_image=keep_copied_img_in_memory)
         if not copied_path:
             print(f"  ✗ Failed to copy image {image_path.name}")
             continue
@@ -453,12 +472,21 @@ def main():
             # Process caption with trigger word replacement
             processed_caption = process_caption_text(caption, trigger_word)
 
-            # Create result entry
-            result_entry = {
-                "image_path": copied_path,
-                "control_path": copied_path,
-                "caption": processed_caption,
-            }
+            if isinstance(copied_path, Image.Image) and keep_copied_img_in_memory:
+                # Create result entry (copied_path == Image)
+                img: Image.Image = copied_path
+                result_entry: InMemoryResultEntry = {
+                    "image": img,
+                    "control_image": img,
+                    "caption": processed_caption,
+                }
+            elif isinstance(copied_path, Path):
+                # Create result entry (copied_path == Path)
+                result_entry: ResultEntry = {
+                    "image_path": copied_path,
+                    "control_path": copied_path,
+                    "caption": processed_caption,
+                }
             
             results.append(result_entry)
             successful_processing += 1
@@ -466,25 +494,52 @@ def main():
         else:
             print(f"  ✗ Failed to generate caption for {image_path.name}")
 
-    if no_jsonl:
-        # Create text files from results
-        print("\nCreating text files from results...")
-        for i, result in enumerate(results, 1):
-            text_filename = f"{i}.txt"
-            text_filepath = os.path.join(target_dir, text_filename)
-            Path(text_filepath).write_text(result["caption"], encoding='utf-8')
-            print(f"  Created caption file: {text_filename}")
-    else:
+    write_task_handled = False
+
+    if can_upload_to_huggingface and keep_copied_img_in_memory and write_task_handled is False:
+        write_task_handled = True
+        from create import create_parquet, upload_to_hf
+        parquet_path = create_parquet(source_dir, results)
+        upload_to_hf(parquet_path, huggingface_repoid, huggingface_token)
+        pass
+        
+    if parquet and keep_copied_img_in_memory and write_task_handled is False:
+        write_task_handled = True
+        
+        from create import create_parquet
+        create_parquet(source_dir, results)
+        
+    if jsonl and write_task_handled is False:
         # JSONL write operation
         if results:
             print(f"\nWriting {len(results)} results to JSONL: {jsonl_path}")
             with open(jsonl_path, 'w', encoding='utf-8') as f:
                 dump = '\n'.join(json.dumps(result, ensure_ascii=False) for result in results)
                 f.write(dump)
+    
+    if not write_task_handled:
+        # normal write operation create text files
+        print("\nCreating text files from results...")
+        for i, result in enumerate(results, 1):
+            text_filename = f"{i}.txt"
+            text_filepath = os.path.join(target_dir, text_filename)
+            Path(text_filepath).write_text(result["caption"], encoding='utf-8')
+            print(f"  Created caption file: {text_filename}")
 
     # Print summary
     print(f"\nProcessing complete!")
     print(f"Successfully processed {successful_processing}/{len(image_files)} images")
+
+class ResultEntry(TypedDict):
+    image_path: Path
+    control_path: Path
+    caption: str
+    
+class InMemoryResultEntry(TypedDict):
+    image: Image.Image
+    control_image: Image.Image
+    caption: str
+
 
 if __name__ == "__main__":
     main()
