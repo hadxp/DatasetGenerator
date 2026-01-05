@@ -1,22 +1,22 @@
 ﻿import os
 from pathlib import Path
-from typing import Dict, List, Union
-from main import InMemoryResultEntry
+from typing import List
 from PIL import Image
 from io import BytesIO
+from utils import InMemoryResultEntry
 
 from datasets import Dataset, Features, Value
 from huggingface_hub import HfApi
 
-def create_parquet(datasets_dir_path: Path, data: List[InMemoryResultEntry]) -> Path:
+def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> Path:
     """
     Creates a dataset with columns "image_bytes" and "captions,
     saves a parquet file in the root directory of the dataset (parent folder of dataset folder)
     and uploads it to huggingface
     """
-    dataset_name = datasets_dir_path.parent.name
-    parquet_path = datasets_dir_path.parent / f"{dataset_name}.parquet"
-    print(f"Dataset name is '{dataset_name}'")
+    dataset_name = dataset_dir_path.name.replace(" - ","--").replace(" ", "-")
+    parquet_path = dataset_dir_path / f"{dataset_name}.parquet"
+    print(f"Parquet name is '{parquet_path}'")
     
     if parquet_path.exists():
         return parquet_path
@@ -54,7 +54,7 @@ def create_parquet(datasets_dir_path: Path, data: List[InMemoryResultEntry]) -> 
         ds.to_parquet(parquet_path)
         return parquet_path
         
-def upload_to_hf(parquet_path: Path, huggingface_repoid: str, huggingface_token: str = os.environ["HF_TOKEN"]):
+def upload_to_hf(parquet_path: Path, huggingface_repoid: str, huggingface_token: str):
     if parquet_path.exists():
         api = HfApi()
 
