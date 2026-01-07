@@ -185,21 +185,16 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
 
 def load_cation_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load Florence2 model and processor with proper data type handling."""
-    print("Loading Florence2 model...")
+    repoid="microsoft/Florence-2-large"
+    print(f"Loading caption({repoid}) model...")
+    
     try:
-        model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
-        )
+        model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(repoid, trust_remote_code=True, torch_dtype=torch_dtype)
 
         model = model.to(torch_device) # move the model to cuda
         model.eval()  # Set to evaluation mode
 
-        processor: AutoProcessor = AutoProcessor.from_pretrained(
-            "microsoft/Florence-2-large",
-            trust_remote_code=True
-        )
+        processor: AutoProcessor = AutoProcessor.from_pretrained(repoid, trust_remote_code=True)
 
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
         return model, processor

@@ -9,15 +9,15 @@ from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
 
 def load_upscaler_model() -> Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution] | None:
     """Load the DiffusionPipeline for upscaling."""
-    print("Loading Upscaler-Ultra model...")
-
+    
+    repo_id="caidas/swin2SR-classical-sr-x2-64"
+    print(f"Loading upscale({repo_id}) model...")
+    
     try:
         upscale_processor: Swin2SRImageProcessor = Swin2SRImageProcessor.from_pretrained(
-            "caidas/swin2SR-classical-sr-x2-64", trust_remote_code=True)
+            repo_id, trust_remote_code=True)
         upscale_model: Swin2SRForImageSuperResolution = Swin2SRForImageSuperResolution.from_pretrained(
-            "caidas/swin2SR-classical-sr-x2-64",
-            trust_remote_code=True,
-            torch_dtype=torch_dtype
+            repo_id, trust_remote_code=True, torch_dtype=torch_dtype
         )
         upscale_model = upscale_model.to(torch_device)
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
