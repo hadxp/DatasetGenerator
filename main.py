@@ -200,14 +200,14 @@ def main():
                         # Create (path) result entry
                         result_entry: ResultEntry = {
                             "image_path": str(target_path),
-                            "control_path": str(target_path),
+                            #"control_path": str(target_path),
                             "caption": processed_caption,
                         }
                     else:
                         # Create (image) result entry
                         result_entry: InMemoryResultEntry = {
                             "image": processed_img,
-                            "control_image": processed_img,
+                            #"control_image": processed_img,
                             "caption": processed_caption,
                         }
         
