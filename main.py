@@ -21,7 +21,7 @@ from typing import List
 
 import utils
 from caption_generator import generate_caption, process_caption_text, load_cation_model_florence2, load_caption_model_qwen3
-from create import create_parquet, upload_to_hf
+from parquet import create_parquet, upload_to_hf
 from utils import ResultEntry, InMemoryResultEntry, get_image_files, get_video_files, InMemoryResultEntryVideo
 from image_preprocessor import load_upscaler_model, preprocess_image
 
@@ -70,7 +70,7 @@ def main():
     search_dir: str = args.search_dir
     
     can_upload_to_huggingface = huggingface_token is not None and huggingface_repoid != ""
-    save_upscaled_img = parquet is False and not can_upload_to_huggingface
+    save_img = parquet is False and not can_upload_to_huggingface
     
     if not trigger_word:
         print("Error: Trigger word cannot be empty.")
@@ -193,14 +193,14 @@ def main():
                     # extract frames from the video
                     frames: List[np.ndarray] = []
                     for frame in video.decode(video=0):
-                        img = frame.to_ndarray(format="rgb24")
-                        frames.append(img)
+                        frame_img = frame.to_ndarray(format="rgb24")
+                        frames.append(frame_img)
                 elif is_image:
                     img = Image.open(file_path).convert("RGB")
                 
                 if is_image:
                     img = preprocess_image(img, upscale_processor, upscale_model, imgwidth, imgheight)
-                    if save_upscaled_img:
+                    if jsonl or save_img:
                         # Check if the target image already exists
                         if target_path.exists():
                             #print(f"  Warning: {target_filename} already exists, skipping copy")
@@ -232,20 +232,16 @@ def main():
                     # Process caption with trigger word replacement
                     processed_caption = process_caption_text(caption, trigger_word)
                     
-                    if is_video:
-                        result_entry: InMemoryResultEntryVideo = {
-                            "video": frames,
-                            # no control path
-                            "caption": processed_caption,
-                        }
-                    elif is_image and not save_upscaled_img:
+                    if not save_img and not jsonl:
                         result_entry: InMemoryResultEntry = {
+                            "video": frames,
                             "image": img,
                             #"control_image": img,
                             "caption": processed_caption,
                         }
                     else:
                         result_entry: ResultEntry = {
+                            "video_path": str(target_path),
                             "image_path": str(target_path),
                             # "control_path": str(target_path),
                             "caption": processed_caption,
@@ -260,17 +256,17 @@ def main():
         
             write_task_handled: bool = False
         
-            if can_upload_to_huggingface and not save_upscaled_img and write_task_handled is False:
+            if can_upload_to_huggingface and not save_img and write_task_handled is False:
                 write_task_handled = True
                 parquet_path = create_parquet(dataset_dir, results)
                 upload_to_hf(parquet_path, huggingface_repoid, huggingface_token)
                 
-            if parquet and not save_upscaled_img and write_task_handled is False:
+            if parquet and not save_img and write_task_handled is False:
                 write_task_handled = True
                 create_parquet(dataset_dir, results)
                 
             # save_upscaled_img needs to be true for jsonl, since the jsonl references it
-            if jsonl and save_upscaled_img and write_task_handled is False:
+            if jsonl and write_task_handled is False:
                 write_task_handled = True
                 if results:
                     print(f"\nWriting {len(results)} results to JSONL: {jsonl_path}")
@@ -278,7 +274,7 @@ def main():
                         dump = '\n'.join(json.dumps(result, ensure_ascii=False) for result in results)
                         f.write(dump)
             
-            if not write_task_handled and save_upscaled_img is True:
+            if not write_task_handled:
                 # normal write operation create text files
                 print("\nCreating text (caption) files from results...")
                 for i, result in enumerate(results, 1):

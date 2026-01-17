@@ -5,15 +5,11 @@ from typing import List
 import numpy as np
 from PIL import Image
 from io import BytesIO
-
-from av.container import InputContainer
-
-from utils import InMemoryResultEntry, InMemoryResultEntryVideo
-
-from datasets import Dataset, Features, Value
 from huggingface_hub import HfApi
+from utils import InMemoryResultEntry
+from datasets import Dataset, Features, Value
 
-def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry] | List[InMemoryResultEntryVideo]) -> Path:
+def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> Path:
     """
     Creates a dataset with columns "image_bytes" and "captions,
     saves a parquet file in the root directory of the dataset (parent folder of dataset folder)
@@ -33,11 +29,11 @@ def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry] | Lis
         captions: List[str] = []
     
         for result_entry in data:
-            if "video" in result_entry:
+            if "video" in result_entry and result_entry["video"] is not None:
                 video_frames: List[np.ndarray] = result_entry["video"]
                 b = frames_to_bytes(video_frames)
                 
-            if "image" in result_entry:
+            if "image" in result_entry and result_entry["image"] is not None:
                 image: Image.Image = result_entry["image"]
                 control: Image.Image = result_entry["control_image"] # unused
                 b = image_to_bytes(image, format="PNG")

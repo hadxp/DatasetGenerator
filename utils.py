@@ -18,13 +18,9 @@ class ResultEntry(TypedDict):
 
 
 class InMemoryResultEntry(TypedDict):
+    video: List[np.ndarray]
     image: Image.Image
     control_image: Image.Image
-    caption: str
-
-
-class InMemoryResultEntryVideo(TypedDict):
-    video: List[np.ndarray]
     caption: str
 
 def get_image_files(directory: Path) -> List[Path]:
