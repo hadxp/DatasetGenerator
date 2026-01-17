@@ -1,14 +1,19 @@
-﻿import os
+﻿import av
 from pathlib import Path
 from typing import List
+
+import numpy as np
 from PIL import Image
 from io import BytesIO
-from utils import InMemoryResultEntry
+
+from av.container import InputContainer
+
+from utils import InMemoryResultEntry, InMemoryResultEntryVideo
 
 from datasets import Dataset, Features, Value
 from huggingface_hub import HfApi
 
-def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> Path:
+def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry] | List[InMemoryResultEntryVideo]) -> Path:
     """
     Creates a dataset with columns "image_bytes" and "captions,
     saves a parquet file in the root directory of the dataset (parent folder of dataset folder)
@@ -21,30 +26,34 @@ def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> P
     if parquet_path.exists():
         return parquet_path
     else:
-        image_bytes_column_name = "image_bytes"
+        bytes_column_name = "bytes"
         captions_column_name = "captions"
     
-        image_bytes: List[bytes] = []
+        byte_list: List[bytes] = []
         captions: List[str] = []
     
         for result_entry in data:
-            image = result_entry["image"]
-            control = result_entry["control_image"] # unused
+            if "video" in result_entry:
+                video_frames: List[np.ndarray] = result_entry["video"]
+                b = frames_to_bytes(video_frames)
+                
+            if "image" in result_entry:
+                image: Image.Image = result_entry["image"]
+                control: Image.Image = result_entry["control_image"] # unused
+                b = image_to_bytes(image, format="PNG")
+
             caption = result_entry["caption"]
-    
-            # read image bytes
-            ib = image_to_bytes(image, format="PNG")
-            image_bytes.append(ib)
+            byte_list.append(b)
             captions.append(caption)
     
         # list of raw image bytes and captions
         dataset_dict = {
-            image_bytes_column_name: image_bytes,
+            bytes_column_name: byte_list,
             captions_column_name: captions
         }
     
         features = Features({
-            image_bytes_column_name: Value("binary"),
+            bytes_column_name: Value("binary"),
             captions_column_name: Value("string")
         })
     
@@ -69,4 +78,24 @@ def upload_to_hf(parquet_path: Path, huggingface_repoid: str, huggingface_token:
 def image_to_bytes(img: Image.Image, format: str = "PNG") -> bytes:
     buffer = BytesIO()
     img.save(buffer, format=format)
+    return buffer.getvalue()
+
+def frames_to_bytes(frames: List[np.ndarray], fps=30, codec="libx264"):
+    buffer = BytesIO()
+
+    container = av.open(buffer, mode="w", format="mp4")
+    stream = container.add_stream(codec, rate=fps)
+
+    for frame in frames:
+        video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+        packet = stream.encode(video_frame)
+        if packet:
+            container.mux(packet)
+
+    # flush encoder
+    packet = stream.encode(None)
+    if packet:
+        container.mux(packet)
+
+    container.close()
     return buffer.getvalue()

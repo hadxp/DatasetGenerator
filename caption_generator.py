@@ -1,10 +1,12 @@
 import sys
 import torch
+import transformers
+import numpy as np
 from PIL import Image
-from pathlib import Path
-from typing import Tuple
+from packaging.version import Version
+from typing import Tuple, List
 from utils import torch_device, torch_dtype
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForCausalLM, AutoProcessor, AutoModelForImageTextToText
 
 def get_task_prompt(task: str) -> str:
     """Get the appropriate prompt for the given task."""
@@ -39,10 +41,10 @@ def validate_task_input(task: str, text_input: str) -> None:
             "'caption_to_phrase_grounding', and 'docvqa' tasks"
         )
 
-def generate_caption(
+def generate_caption_florence2(
         model: AutoModelForCausalLM,
         processor: AutoProcessor,
-        image_path: Path,
+        img: Image.Image,
         task: str = "more_detailed_caption",
         text_input: str = "",
         max_new_tokens: int = 256,
@@ -63,8 +65,11 @@ def generate_caption(
         prompt = task_prompt
 
     try:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+            
         # Load and process image
-        image = Image.open(image_path).convert('RGB')
+        image = img
 
         # Process image and text
         inputs = processor(text=prompt, images=image, return_tensors="pt")
@@ -108,10 +113,88 @@ def generate_caption(
         return generated_text
 
     except Exception as e:
-        print(f"Error processing {image_path}: {e}")
+        print(f"Error processing image: {e}")
         import traceback
         traceback.print_exc()
         return None
+
+
+def generate_caption_qwen3(
+    model: AutoModelForImageTextToText,
+    processor: AutoProcessor,
+    video_frames: List[np.ndarray],
+    max_new_tokens: int = 512,
+    num_beams: int = 1
+) -> str | None:
+    """Generate caption for an image"""
+    prompt = f"Describe this video in detail use girl instead of names. Answer only in the generated caption for the video. Nothing additional"
+
+    try:   
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+
+        # Produce text with image tokens
+        text_inputs = processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=False,
+            return_tensors="pt",
+        )
+
+        # Build multimodal inputs (text + video)
+        inputs = processor(
+            videos=video_frames,
+            text=text_inputs,
+            return_tensors="pt",
+        )
+
+        # Move inputs to same device/dtype as model
+        inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+        # Generate caption 
+        with torch.no_grad():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_beams=num_beams,
+                do_sample=False,
+            )
+
+        # Decode the generated text 
+        generated_text = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+        )[0]
+
+        # Remove everything upto (including) the word "assistant"
+        marker = "assistant"
+
+        # Use find() to get the index of the first occurrence (of the marker)
+        start_index = generated_text.find(marker) + len(marker)
+
+        # Slice the string from that index to the end
+        generated_text = generated_text[start_index:]
+
+        return generated_text
+    except Exception as e:
+        print(f"Error processing video: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def generate_caption(model, processor, source_file_object, task: str = "more_detailed_caption", text_input: str = "") -> str | None:
+    if isinstance(model, AutoModelForCausalLM) and isinstance(processor, AutoProcessor):
+        return generate_caption_florence2(model, processor, source_file_object, task, text_input)
+    if isinstance(model, AutoModelForImageTextToText) and isinstance(processor, AutoProcessor):
+        return generate_caption_qwen3(model, processor, source_file_object)
+    return None
 
 def process_caption_text(caption: str, trigger_word: str) -> str:
     """Process and clean the caption text with trigger word replacement."""
@@ -183,11 +266,17 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
 
     return processed_caption.strip()
 
-def load_cation_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
+def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load Florence2 model and processor with proper data type handling."""
     repoid="microsoft/Florence-2-large"
     print(f"Loading caption({repoid}) model...")
     
+    version = Version(transformers.__version__)
+
+    if version == Version("4.53.1"):
+        print("Please use transformers version 4.53.1")
+        sys.exit(1)
+
     try:
         model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(repoid, trust_remote_code=True, torch_dtype=torch_dtype)
 
@@ -200,4 +289,27 @@ def load_cation_model() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
         return model, processor
     except Exception as e:
         print(f"Error loading Florence2 model: {e}")
+        sys.exit(1)
+        
+def load_caption_model_qwen3() -> Tuple[AutoModelForImageTextToText, AutoProcessor]:
+    """Load Caption model and processor with proper data type handling."""
+    try:
+        print("Loading Qwen/Qwen3-VL-8B-Instruct model...")
+
+        version = Version(transformers.__version__)
+
+        if version == Version("4.57.3"):
+            print("Please use transformers version 4.57.3")
+            sys.exit(1)
+
+        repo_id = "Qwen/Qwen3-VL-8B-Instruct"
+        model = (AutoModelForImageTextToText.from_pretrained(repo_id, device_map="auto", dtype=torch_dtype)
+                 .to(torch_device))
+        processor = AutoProcessor.from_pretrained(repo_id, dtype=torch_dtype)
+
+        print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
+
+        return model, processor
+    except Exception as e:
+        print(f"Error loading Caption model: {e}")
         sys.exit(1)

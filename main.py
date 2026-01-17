@@ -8,16 +8,21 @@ python main.py [triggerword] [dataset_names]
 """
 
 import os
+import av
 import sys
 import json
 import argparse
 
+import numpy as np
+from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
 from typing import List
-from caption_generator import load_cation_model, generate_caption, process_caption_text
+
+import utils
+from caption_generator import generate_caption, process_caption_text, load_cation_model_florence2, load_caption_model_qwen3
 from create import create_parquet, upload_to_hf
-from utils import ResultEntry, InMemoryResultEntry, get_image_files
+from utils import ResultEntry, InMemoryResultEntry, get_image_files, get_video_files, InMemoryResultEntryVideo
 from image_preprocessor import load_upscaler_model, preprocess_image
 
 def setup_argparse() -> argparse.ArgumentParser:
@@ -36,8 +41,6 @@ def setup_argparse() -> argparse.ArgumentParser:
                         ],
                         help='Task type for Florence-2 model')
     parser.add_argument('--text-input', default='', help='Additional text input for specific tasks in caption generation')
-    parser.add_argument('--max-new-tokens', type=int, default=256, help='Maximum new tokens for caption generation')
-    parser.add_argument('--num-beams', type=int, default=3, help='Number of beams for caption generation')
     parser.add_argument('--imgwidth', type=int, default=1024, help='The width the images are scaled to')
     parser.add_argument('--imgheight', type=int, default=1024, help='The height the images are scaled to')
     parser.add_argument('--jsonl', action='store_true', default=False, help='Enable jsonl generation')
@@ -57,8 +60,6 @@ def main():
     trigger_word: str = args.triggerword.strip()
     task: str = args.task
     text_input: str = args.text_input
-    max_new_tokens: int = args.max_new_tokens
-    num_beams: int = args.num_beams
     imgwidth: str = args.imgwidth
     imgheight: str = args.imgheight
     jsonl: bool = args.jsonl
@@ -115,12 +116,18 @@ def main():
         # create the directory
         target_dir.mkdir(parents=True, exist_ok=True)  # Create target directory if it does not exist
     
+        # NOTE: a dataset can only consist of images or videos, never both
+        is_video_dataset = False
+    
         # Get image files
         print(f"Scanning for images in {source_dir}...")
-        image_files = get_image_files(source_dir)
+        files = get_image_files(source_dir)
+        if len(files) <= 0:
+            files = get_video_files(source_dir)
+            is_video_dataset = True
     
-        if not image_files:
-            print("No image files found in the source directory.")
+        if not files:
+            print("No image or video files found in the source directory.")
             sys.exit(1)
 
         # check the generation file
@@ -134,80 +141,113 @@ def main():
             with open(generation_file_path, "r", encoding="utf-8") as f:
                 saved_count = int(f.read().strip())
             # check if its content equals the number of images -> if yes skip procesing
-            if saved_count == len(image_files):
+            if saved_count == len(files):
                 regernerate_dataset = False
         else:
             # create the file
             with open(generation_file_path, "w", encoding="utf-8") as f:
-                f.write(str(len(image_files)))
+                f.write(str(len(files)))
     
         # regenerate the dataset if needed
         if regernerate_dataset:
-            print(f"Found {len(image_files)} image files.")
+            print(f"Found {len(files)} files.")
             print(f"Using task: {args.task}")
             print(f"Using trigger word: {trigger_word}")
             if args.text_input:
                 print(f"Using text input: {args.text_input}")
         
-            results: List[ResultEntry] | List[InMemoryResultEntry] = []
+            results: List[ResultEntry] | List[InMemoryResultEntry] | List[InMemoryResultEntryVideo] = []
             jsonl_path = target_dir / "0_dataset.jsonl"
         
             print(f"\nStarting image processing and caption generation...")
 
+            # TODO - load if needed foreach dataset-item with caching, make uv up/down grade the transformers package as needed
             # Load caption model
-            model, processor = load_cation_model()
+            if is_video_dataset:
+                model, processor = load_caption_model_qwen3()
+            else:
+                model, processor = load_cation_model_florence2()
 
             # Load upscale upscale model
             upscale_processor, upscale_model = load_upscaler_model()
         
             successful_processing = 0
-            for i, image_path in enumerate(tqdm(image_files), 1):
+            for i, file_path in enumerate(tqdm(files), 1):
                 #print(f"Processing {i}/{len(image_files)}: {image_path.name}")
+        
+                is_video = False
+                is_image = False
+                if file_path.suffix in utils.video_extensions:
+                    is_video = True
+                if file_path.suffix in utils.image_extensions:
+                    is_image = True
         
                 target_filename = f"{i}.png"
         
                 # path of the copied image
                 target_path = target_dir / target_filename
                 
-                processed_img = preprocess_image(image_path, upscale_processor, upscale_model, imgwidth, imgheight)
+                # load the source
+                if is_video:
+                    video = av.open(file_path)
+                    # extract frames from the video
+                    frames: List[np.ndarray] = []
+                    for frame in video.decode(video=0):
+                        img = frame.to_ndarray(format="rgb24")
+                        frames.append(img)
+                elif is_image:
+                    img = Image.open(file_path).convert("RGB")
                 
-                if save_upscaled_img:
-                    # Check if the target image already exists
-                    if target_path.exists():
-                        #print(f"  Warning: {target_filename} already exists, skipping copy")
-                        pass
-                    else:
-                        # Save as PNG
-                        processed_img.save(target_path, 'PNG')
-                        #print(f"  ✓ Copied image {target_path.name}")
-        
+                if is_image:
+                    img = preprocess_image(img, upscale_processor, upscale_model, imgwidth, imgheight)
+                    if save_upscaled_img:
+                        # Check if the target image already exists
+                        if target_path.exists():
+                            #print(f"  Warning: {target_filename} already exists, skipping copy")
+                            pass
+                        else:
+                            # Save as PNG
+                            img.save(target_path, 'PNG')
+                            #print(f"  ✓ Copied image {target_path.name}")
+
                 # Generate caption
-                caption = generate_caption(
-                    model=model,
-                    processor=processor,
-                    image_path=image_path,
-                    task=task,
-                    text_input=text_input,
-                    max_new_tokens=max_new_tokens,
-                    num_beams=num_beams
-                )
+                if is_video:
+                    caption = generate_caption(
+                        model=model,
+                        processor=processor,
+                        source_file_object=frames,
+                        task=task,
+                        text_input=text_input,
+                    )
+                elif is_image:
+                    caption = generate_caption(
+                        model=model,
+                        processor=processor,
+                        source_file_object=img,
+                        task=task,
+                        text_input=text_input,
+                    )
         
                 if caption:
                     # Process caption with trigger word replacement
                     processed_caption = process_caption_text(caption, trigger_word)
                     
-                    if save_upscaled_img:
-                        # Create (path) result entry
-                        result_entry: ResultEntry = {
-                            "image_path": str(target_path),
-                            #"control_path": str(target_path),
+                    if is_video:
+                        result_entry: InMemoryResultEntryVideo = {
+                            "video": frames,
+                            # no control path
+                            "caption": processed_caption,
+                        }
+                    elif is_image and not save_upscaled_img:
+                        result_entry: InMemoryResultEntry = {
+                            "image": img,
+                            #"control_image": img,
                             "caption": processed_caption,
                         }
                     else:
-                        # Create (image) result entry
-                        result_entry: InMemoryResultEntry = {
-                            "image": processed_img,
-                            #"control_image": processed_img,
+                        result_entry: ResultEntry = {
+                            "image_path": str(target_path),
+                            # "control_path": str(target_path),
                             "caption": processed_caption,
                         }
         
@@ -249,7 +289,7 @@ def main():
         
             # Print summary
             print(f"\nProcessing complete!")
-            print(f"Successfully processed {successful_processing}/{len(image_files)} images")
+            print(f"Successfully processed {successful_processing}/{len(files)} images")
 
 if __name__ == "__main__":
     main()

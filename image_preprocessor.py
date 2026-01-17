@@ -28,13 +28,18 @@ def load_upscaler_model() -> Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperRe
         return None
 
 
-def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor,
+def sharpen_image(img: Image.Image, upscale_processor: Swin2SRImageProcessor,
                   upscale_model: Swin2SRForImageSuperResolution) -> Image.Image:
-    """Sharpen image using Upscaler-Ultra before further processing."""
-    if upscale_processor or upscale_model is None:
-        return Image.open(source_path).convert("RGB")
+    """Sharpens image using Upscaler-Ultra"""
 
-    input_image = Image.open(source_path).convert("RGB")
+    # Convert to RGB if necessary
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    
+    if upscale_processor or upscale_model is None:
+        return img
+
+    input_image = img
 
     inputs = upscale_processor(images=input_image, return_tensors="pt")
     pixel_values = inputs['pixel_values']
@@ -64,7 +69,7 @@ def sharpen_image(source_path: Path, upscale_processor: Swin2SRImageProcessor,
 
 
 def preprocess_image(
-    source_path: Path,
+    img: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
     upscale_model: Swin2SRForImageSuperResolution,
     imgwidth: int,
@@ -72,11 +77,7 @@ def preprocess_image(
     """Copy image to target directory with format conversion to PNG and padding to fit dimensions."""
 
     # Open and process image (sharpening happens inside sharpen_image)
-    img = sharpen_image(source_path, upscale_processor, upscale_model)
-
-    # Convert to RGB if necessary
-    if img.mode != 'RGB':
-        img = img.convert('RGB')
+    img = sharpen_image(img, upscale_processor, upscale_model)
 
     # Calculate scaling factor to fit within target dimensions while preserving aspect ratio
     original_width, original_height = img.size
