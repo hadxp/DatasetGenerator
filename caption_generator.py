@@ -127,7 +127,8 @@ def generate_caption_qwen3(
     num_beams: int = 1
 ) -> str | None:
     """Generate caption for an image"""
-    prompt = f"Describe this video in detail use girl instead of names. Answer only in the generated caption for the video. Nothing additional"
+    prompt = ("Describe this video in detail use girl instead of names. Skip in-depth backgraund description. Answer only with the generated caption for the video. Nothing additional."
+              "Focus on the describing task")
 
     try:   
         messages = [
@@ -159,7 +160,7 @@ def generate_caption_qwen3(
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
         # Generate caption 
-        with torch.no_grad():
+        with torch.no_grad(): 
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
