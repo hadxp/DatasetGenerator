@@ -127,7 +127,7 @@ def generate_caption_qwen3(
     num_beams: int = 1
 ) -> str | None:
     """Generate caption for an image"""
-    prompt = ("Describe this video in detail use girl instead of names. Skip in-depth backgraund description. Answer only with the generated caption for the video. Nothing additional."
+    prompt = ("Describe this video in detail use girl instead of names. Skip in-depth background description. Answer only with the generated caption for the video. Nothing additional."
               "Focus on the describing task")
 
     try:   
@@ -149,12 +149,20 @@ def generate_caption_qwen3(
             return_tensors="pt",
         )
 
-        # Build multimodal inputs (text + video)
-        inputs = processor(
-            videos=video_frames,
-            text=text_inputs,
-            return_tensors="pt",
-        )
+        if isinstance(video_frames, Image.Image):
+            # Build multimodal inputs (image + video)
+            inputs = processor(
+                images=video_frames,
+                text=text_inputs,
+                return_tensors="pt",
+            )
+        else:
+            # Build multimodal inputs (text + video)
+            inputs = processor(
+                videos=video_frames,
+                text=text_inputs,
+                return_tensors="pt",
+            )
 
         # Move inputs to same device/dtype as model
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
@@ -189,13 +197,6 @@ def generate_caption_qwen3(
         import traceback
         traceback.print_exc()
         return None
-
-def generate_caption(model, processor, source_file_object, task: str = "more_detailed_caption", text_input: str = "") -> str | None:
-    if isinstance(model, AutoModelForCausalLM) and isinstance(processor, AutoProcessor):
-        return generate_caption_florence2(model, processor, source_file_object, task, text_input)
-    if isinstance(model, AutoModelForImageTextToText) and isinstance(processor, AutoProcessor):
-        return generate_caption_qwen3(model, processor, source_file_object)
-    return None
 
 def process_caption_text(caption: str, trigger_word: str) -> str:
     """Process and clean the caption text with trigger word replacement."""
@@ -267,6 +268,17 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
 
     return processed_caption.strip()
 
+def generate_caption(model, processor: AutoProcessor, source_object, task: str = "more_detailed_caption", text_input: str = "") -> str | None:
+    is_florence = "florence" in model.__class__.__name__.lower()
+    is_qwen = "qwen" in model.__class__.__name__.lower()
+    if is_florence: # florence2
+        return generate_caption_florence2(model, processor, source_object, task, text_input)
+    elif is_qwen: # qwen
+        return generate_caption_qwen3(model, processor, source_object)
+    else:
+        print("No caption generator found")
+    return None
+
 def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load Florence2 model and processor with proper data type handling."""
     repoid="microsoft/Florence-2-large"
@@ -295,18 +307,18 @@ def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
 def load_caption_model_qwen3() -> Tuple[AutoModelForImageTextToText, AutoProcessor]:
     """Load Caption model and processor with proper data type handling."""
     try:
-        print("Loading Qwen/Qwen3-VL-8B-Instruct model...")
+        repoid = "Qwen/Qwen3-VL-8B-Instruct"
+        print(f"Loading caption({repoid}) model...")
 
         version = Version(transformers.__version__)
 
-        if version == Version("4.57.3"):
-            print("Please use transformers version 4.57.3")
+        if version == Version("5.0.0"):
+            print("Please use transformers version 5.0.0")
             sys.exit(1)
 
-        repo_id = "Qwen/Qwen3-VL-8B-Instruct"
-        model = (AutoModelForImageTextToText.from_pretrained(repo_id, device_map="auto", dtype=torch_dtype)
+        model = (AutoModelForImageTextToText.from_pretrained(repoid, device_map="auto", dtype=torch_dtype)
                  .to(torch_device))
-        processor = AutoProcessor.from_pretrained(repo_id, dtype=torch_dtype)
+        processor = AutoProcessor.from_pretrained(repoid, dtype=torch_dtype)
 
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
 

@@ -1,4 +1,3 @@
-import av
 import numpy as np
 import torch
 from PIL import Image
@@ -12,15 +11,18 @@ image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'}
 video_extensions = {'.mp4', '.webm', '.mkv', '.mov', '.avi', '.flv', '.wmv', '.m4v'}
 
 class ResultEntry(TypedDict):
-    image_path: str
-    control_path: str
-    caption: str
-
-
-class InMemoryResultEntry(TypedDict):
     video: List[np.ndarray]
     image: Image.Image
-    control_image: Image.Image
+    control: Image.Image
+    caption: str
+    
+class SaveImageEntry(TypedDict):
+    """
+    image_path: str
+    control_image: str → target_image (how image changes, general starting image or the image itself)
+    caption: str"""
+    image_path: str
+    control_path: str
     caption: str
 
 def get_image_files(directory: Path) -> List[Path]:
@@ -42,3 +44,24 @@ def get_video_files(directory: Path) -> List[Path]:
             video_files.append(file_path)
 
     return sorted(video_files)
+
+def save_images(results: List[ResultEntry], target_path: Path) -> List[SaveImageEntry]:
+    """Save images to directory."""
+    save_image_entries = []
+    # Create target directory if it does not exist
+    target_path.mkdir(parents=True, exist_ok=True)
+    for i, result in enumerate(results, 1):
+        img = result["image"]
+        caption = result["caption"]
+        save_path = target_path / f"{i}.png"
+        # Check if the target image already exists
+        if save_path.exists():
+            # print(f"  Warning: {target_filename} already exists, skipping copy")
+            pass
+        else:
+            # Save as PNG
+            img.save(save_path, 'PNG')
+            # print(f"  ✓ Copied image {target_path.name}")
+        save_image_entry = SaveImageEntry(image_path=str(save_path), control_path=str(save_path), caption=caption)
+        save_image_entries.append(save_image_entry)
+    return save_image_entries

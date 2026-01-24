@@ -6,10 +6,10 @@ import numpy as np
 from PIL import Image
 from io import BytesIO
 from huggingface_hub import HfApi
-from utils import InMemoryResultEntry
+from utils import ResultEntry
 from datasets import Dataset, Features, Value
 
-def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> Path:
+def create_parquet(dataset_dir_path: Path, data: List[ResultEntry]) -> Path:
     """
     Creates a dataset with columns "image_bytes" and "captions,
     saves a parquet file in the root directory of the dataset (parent folder of dataset folder)
@@ -29,18 +29,21 @@ def create_parquet(dataset_dir_path: Path, data: List[InMemoryResultEntry]) -> P
         captions: List[str] = []
     
         for result_entry in data:
-            if "video" in result_entry and result_entry["video"] is not None:
+            b = None
+            
+            if result_entry["video"] is not None:
                 video_frames: List[np.ndarray] = result_entry["video"]
                 b = frames_to_bytes(video_frames)
                 
-            if "image" in result_entry and result_entry["image"] is not None:
+            if result_entry["image"] is not None:
                 image: Image.Image = result_entry["image"]
-                control: Image.Image = result_entry["control_image"] # unused
                 b = image_to_bytes(image, format="PNG")
 
-            caption = result_entry["caption"]
-            byte_list.append(b)
-            captions.append(caption)
+            if b is not None:
+                caption = result_entry["caption"]
+                #control = result_entry["control"]
+                byte_list.append(b)
+                captions.append(caption)
     
         # list of raw image bytes and captions
         dataset_dict = {

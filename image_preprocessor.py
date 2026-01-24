@@ -17,7 +17,7 @@ def load_upscaler_model() -> Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperRe
         upscale_processor: Swin2SRImageProcessor = Swin2SRImageProcessor.from_pretrained(
             repo_id, trust_remote_code=True)
         upscale_model: Swin2SRForImageSuperResolution = Swin2SRForImageSuperResolution.from_pretrained(
-            repo_id, trust_remote_code=True, torch_dtype=torch_dtype
+            repo_id, trust_remote_code=True, dtype=torch_dtype
         )
         upscale_model = upscale_model.to(torch_device)
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
@@ -30,7 +30,7 @@ def load_upscaler_model() -> Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperRe
 
 def sharpen_image(img: Image.Image, upscale_processor: Swin2SRImageProcessor,
                   upscale_model: Swin2SRForImageSuperResolution) -> Image.Image:
-    """Sharpens image using Upscaler-Ultra"""
+    """Sharpens image"""
 
     # Convert to RGB if necessary
     if img.mode != 'RGB':
