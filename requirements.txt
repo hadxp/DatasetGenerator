@@ -8,3 +8,5 @@ timm==1.0.20
 datasets
 tqdm
 av
+ffmpeg-python
+opencv-contrib-python

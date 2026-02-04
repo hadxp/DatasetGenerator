@@ -15,6 +15,9 @@ dependencies = [
 	"datasets",
 	"tqdm",
 	"av",
+	"ffmpeg-python",
+	"opencv-contrib-python",
+	"ruff",
 ]
 
 [[tool.uv.index]]
