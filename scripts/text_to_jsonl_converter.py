@@ -30,7 +30,7 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="Converts all files to jsonl format",
     )
     parser.add_argument(
-        "--img_and_caption",
+        "--text",
         action="store_true",
         default=False,
         help="Converts all files from jsonl to file with caption format",
@@ -45,10 +45,10 @@ def main():
 
     source_dir = Path(args.directory)
     convert_to_jsonl = args.jsonl
-    if args.img_and_caption:
+    if args.text:
         convert_to_jsonl = False
 
-    print(f"Scanning for images in {source_dir}...")
+    print(f"Scanning for files in {source_dir}...")
     files = get_image_files(source_dir)
     if len(files) <= 0:
         files = get_video_files(source_dir)
@@ -105,8 +105,10 @@ def main():
             f.write(dump)
     if convert_to_jsonl is False and results:
         for result in results:
-            # the image must already exist
-            file = result["file"]
+            if "image_path" in result:
+                file = result["image_path"]
+            else:
+                file = result["video_path"]
             caption = result["caption"]
             filename = os.path.splitext(os.path.basename(file))[0]
             caption_file_path = source_dir / f"{filename}.txt"

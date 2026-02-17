@@ -1,4 +1,6 @@
+import re
 import sys
+import numpy as np
 import torch
 import transformers
 from PIL import Image
@@ -134,36 +136,53 @@ def generate_caption_florence2(
 
 
 DEFAULT_PROMPT = """
-# Image Annotator
-You are a professional image annotator. Please complete the following task based on the input image or video.
-Use girl instead of names. Answer only with the generated caption for the input. Nothing additional.
+You are a professional image annotator. Complete the following task based on the input image or video.
+Answer only with the generated caption for the input. Nothing additional.
 Skip phrases like "There is no visible text" from the output text.
 Focus on the describing task.
 
-Write the caption using natural, descriptive text without structured formats or rich text.
-Identify the text visible in the image (if any available), without translation or explanation, and highlight it in the caption with quotation marks.
 Maintain authenticity and accuracy, avoid generalizations.
 Do not describe watermarks like "clideo.com"
+"""
 
-Use the following template for describing:
+DESCRIPTOR_TEMPLATE = """
 [Describe the actors and their poses/positions]
 [Clothing and accessories]
 [Describe the location, furniture, background elements]
 [Describe their actions, where they're looking, what they're doing]
 [Style, Camera movement, Camera angle]
+"""
+
+PERSON_DESCRIPTION = """
 [Body shape/size, skin color, tattoos and skin details]
 [Hair color and style, eye color, eyebrow shape, lip color, etc]
 """
 
+
 def generate_caption_qwen3(
     model: Qwen3VLForConditionalGeneration,
     processor: AutoProcessor,
-    frames: Tuple[List[Image.Image], VideoInfo] | Image.Image,
+    frames: Tuple[List[np.ndarray], VideoInfo] | Image.Image,
     max_new_tokens: int = 512,
     num_beams: int = 1,
+    prompt: str = "",
 ) -> str | None:
     """Generate caption for an image or frames"""
-    prompt = DEFAULT_PROMPT
+
+    if prompt:
+        # (p
+        # .replace("{prompt}", DEFAULT_PROMPT)
+        # .replace("{template}", DESCRIPTOR_TEMPLATE)
+        # .replace("{person_template}", PERSON_DESCRIPTION)
+        # )
+        prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
+        prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
+        prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
+    else:
+        prompt = DEFAULT_PROMPT
+
+    # print(prompt)
+    # sys.exit(1)
 
     try:
         if isinstance(frames, Image.Image):
@@ -202,15 +221,15 @@ def generate_caption_qwen3(
                 "duration": video_info.duration,
                 "width": video_info.width,
                 "height": video_info.height,
-                "total_num_frames": len(frames),
-                #"total_original_frames": video_info.total_frames,
-                #"codec": video_info.codec,
-                #"original_resolution": f"{video_info.width}x{video_info.height}",
+                "total_num_frames": len(fs),
+                # "total_original_frames": video_info.total_frames,
+                # "codec": video_info.codec,
+                # "original_resolution": f"{video_info.width}x{video_info.height}",
             }
             text_inputs = get_text_inputs(processor, messages)
             # Build multimodal inputs (text + video)
             inputs = processor(
-                videos=fs,
+                videos=[fs],
                 text=text_inputs,
                 return_tensors="pt",
                 padding=True,
@@ -220,7 +239,7 @@ def generate_caption_qwen3(
         # Move inputs to same device/dtype as model
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-        # Generate caption 
+        # Generate caption
         with torch.inference_mode():
             generated_ids = model.generate(
                 **inputs,
@@ -232,15 +251,18 @@ def generate_caption_qwen3(
                 # eos_token_id=processor.tokenizer.eos_token_id,
                 use_cache=False,
             )
-        
+
         # This releases unused cached memory back to the GPU driver.
         # It does not free tensors you still hold references to.
         torch.cuda.empty_cache()
 
         # Remove the input tokens from the output, leaving only the newly generated tokens
-        generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
+        ]
 
-        # Decode the generated text 
+        # Decode the generated text
         generated_text = processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
@@ -252,8 +274,10 @@ def generate_caption_qwen3(
     except Exception as e:
         print(f"Error processing video: {e}")
         import traceback
+
         traceback.print_exc()
         return None
+
 
 def get_text_inputs(
     processor: AutoProcessor,
@@ -345,14 +369,17 @@ def generate_caption(
     source_object,
     task: str = "more_detailed_caption",
     text_input: str = "",
+    prompt: str = "",
 ) -> str | None:
+    if source_object is None:
+        return None
     processor_class_name = processor.__class__.__name__.lower()
     if "florence" in processor_class_name:
         return generate_caption_florence2(
             model, processor, source_object, task, text_input
         )
     elif "qwen" in processor_class_name:
-        return generate_caption_qwen3(model, processor, source_object)
+        return generate_caption_qwen3(model, processor, source_object, prompt=prompt)
     else:
         print("No caption generator found")
     return None
@@ -365,7 +392,7 @@ def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
 
     version = Version(transformers.__version__)
 
-    if version == Version("4.53.1"):
+    if version != Version("4.53.1"):
         print("Please use transformers version 4.53.1")
         sys.exit(1)
 
@@ -388,13 +415,21 @@ def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
         sys.exit(1)
 
 
-def load_caption_model_qwen3() -> Tuple[Qwen3VLForConditionalGeneration, Qwen3VLProcessor]:
+def load_caption_model_qwen3() -> Tuple[
+    Qwen3VLForConditionalGeneration, Qwen3VLProcessor
+]:
     """Load Qwen3-VL model and processor"""
     try:
         repoid = "Qwen/Qwen3-VL-8B-Instruct"
         print(f"Loading Qwen3-VL model from {repoid}...")
 
-        # Determine optimal dtype based on available memory
+        version = Version(transformers.__version__)
+
+        if version != Version("4.57.6"):
+            print("Please use transformers version 4.57.6")
+            sys.exit(1)
+
+            # Determine optimal dtype based on available memory
         if torch.cuda.is_available():
             if torch.cuda.get_device_properties(0).total_memory >= 16e9:  # 16GB
                 torch_dtype = torch.bfloat16
@@ -405,7 +440,7 @@ def load_caption_model_qwen3() -> Tuple[Qwen3VLForConditionalGeneration, Qwen3VL
 
         # Load model with proper configuration
         model = Qwen3VLForConditionalGeneration.from_pretrained(
-            repoid, torch_dtype=torch_dtype, device_map="auto", trust_remote_code=True
+            repoid, dtype=torch_dtype, device_map="auto", trust_remote_code=True
         )
 
         # Load processor

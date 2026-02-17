@@ -2,11 +2,12 @@ import numpy as np
 from PIL import Image
 from typing import List, Optional
 
+
 def pil_to_numpy(
     pil_image: Image.Image,
     mode: str = "RGB",
     dtype: np.dtype = np.uint8,
-    normalize: bool = False
+    normalize: bool = False,
 ) -> np.ndarray:
     """
     Convert PIL Image to NumPy array.
@@ -71,10 +72,7 @@ def pil_to_numpy(
     return result
 
 
-def numpy_to_pil(
-    numpy_array: np.ndarray,
-    mode: Optional[str] = None
-) -> Image.Image:
+def numpy_to_pil(numpy_array: np.ndarray, mode: Optional[str] = None) -> Image.Image:
     """
     Convert NumPy array to PIL Image.
 
@@ -149,7 +147,7 @@ def batch_pil_to_numpy(
     pil_images: List[Image.Image],
     mode: str = "RGB",
     dtype: np.dtype = np.uint8,
-    normalize: bool = False
+    normalize: bool = False,
 ) -> List[np.ndarray]:
     """
     Convert a list of PIL Images to NumPy arrays.
@@ -170,8 +168,7 @@ def batch_pil_to_numpy(
 
 
 def batch_numpy_to_pil(
-    numpy_arrays: List[np.ndarray],
-    mode: Optional[str] = None
+    numpy_arrays: List[np.ndarray], mode: Optional[str] = None
 ) -> List[Image.Image]:
     """
     Convert a list of NumPy arrays to PIL Images.
@@ -183,8 +180,4 @@ def batch_numpy_to_pil(
     Returns:
         List of PIL Image objects
     """
-    return [
-        numpy_to_pil(arr, mode=mode)
-        for arr in numpy_arrays
-    ]
-
+    return [numpy_to_pil(arr, mode=mode) for arr in numpy_arrays]

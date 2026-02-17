@@ -131,7 +131,9 @@ def preprocess_image(
     upscale_model: Swin2SRForImageSuperResolution,
 ) -> Image.Image:
     return preprocess_image_v2(
-        img, upscale_processor, upscale_model,
+        img,
+        upscale_processor,
+        upscale_model,
     )
 
 

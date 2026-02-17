@@ -4,7 +4,7 @@ including image preprocessing via the "mohsin-riad/upscaler-ultra" upscaler mode
 Florence-2 for caption generation, text replacement with triggerword in generated caption,
 
 usage:
-python main.py [triggerword] [dataset_names]
+python main.py [dataset_names]
 """
 
 import os
@@ -12,7 +12,9 @@ import sys
 import json
 import argparse
 
+import transformers
 from PIL import Image
+from packaging.version import Version
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
@@ -28,12 +30,13 @@ from utils import (
     ResultEntry,
     get_image_files,
     get_video_files,
-    save_images,
+    save,
     image_extensions,
     video_extensions,
 )
 from image_preprocessor import load_upscaler_model, preprocess_image
 from VideoFrameExtractor import VideoFrameExtractor, VideoInfo
+
 
 def setup_argparse() -> argparse.ArgumentParser:
     """Set up command line argument parsing."""
@@ -41,7 +44,15 @@ def setup_argparse() -> argparse.ArgumentParser:
         description="Enhance, scale and generate captions (using Florence2) for images"
     )
     parser.add_argument(
-        "triggerword",
+        "dataset",
+        type=str,
+        default=None,
+        help="The name of the folder the dataset(s) to parse is in (comma separated)",
+    )
+    parser.add_argument(
+        "--triggerword",
+        type=str,
+        default="",
         help="The Triggerword to replace gender terms in generated captions",
     )
     parser.add_argument(
@@ -72,15 +83,6 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="Additional text input for specific tasks in caption generation",
     )
     parser.add_argument(
-        "--imgwidth", type=int, default=1024, help="The width the images are scaled to"
-    )
-    parser.add_argument(
-        "--imgheight",
-        type=int,
-        default=1024,
-        help="The height the images are scaled to",
-    )
-    parser.add_argument(
         "--jsonl", action="store_true", default=False, help="Enable jsonl generation"
     )
     parser.add_argument(
@@ -99,32 +101,26 @@ def setup_argparse() -> argparse.ArgumentParser:
         "--huggingface_token", type=str, default=None, help="Huggingface token"
     )
     parser.add_argument(
-        "dataset",
-        type=str,
-        default=None,
-        help="The name of the folder the dataset(s) to parse is in (comma separated)",
-    )
-    parser.add_argument(
         "--search_dir",
         type=str,
         default=None,
         help="The folder to search the datasets in",
     )
     parser.add_argument(
-        "--qwen",
-        action="store_true",
-        default=False,
-        help="Force uses qwen to describe images or videos",
-    )
-    parser.add_argument(
         "--no_check", action="store_true", default=False, help="Skips gen.txt check"
     )
-
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default="",
+        help='Replaces the default prompt, words like "{prompt}" or "{template}" or "{person_template}" will be replaced',
+    )
     return parser
 
 
 video: Tuple[List[Image.Image], VideoInfo] = None
 img: Image.Image = None
+
 
 def main():
     global video
@@ -138,24 +134,18 @@ def main():
     trigger_word: str = args.triggerword.strip()
     task: str = args.task
     text_input: str = args.text_input
-    imgwidth: str = args.imgwidth
-    imgheight: str = args.imgheight
     jsonl: bool = args.jsonl
     parquet: bool = args.parquet
     huggingface_repoid: str = args.huggingface_repoid
     huggingface_token: str = args.huggingface_token
     dataset_names_arg: str = args.dataset
     search_dir: str = args.search_dir
-    qwen: bool = args.qwen
     no_check: bool = args.no_check
+    prompt: bool = args.prompt
 
     can_upload_to_huggingface = (
         huggingface_token is not None and huggingface_repoid != ""
     )
-
-    if not trigger_word:
-        print("Error: Trigger word cannot be empty.")
-        sys.exit(1)
 
     if dataset_names_arg is None:
         print("No dataset(s) specified, cannot continue")
@@ -194,15 +184,11 @@ def main():
         # "out" as target_dir (if one is needed)
         target_dir = dataset_dir / "out"
 
-        # NOTE: a dataset can only consist of images or videos, never both
-        is_video_dataset = False
-
         # Get image files
         print(f"Scanning for images in {source_dir}...")
         files = get_image_files(source_dir)
         if len(files) <= 0:
             files = get_video_files(source_dir)
-            is_video_dataset = True
 
         if not files:
             print("No image or video files found in the source directory.")
@@ -231,28 +217,31 @@ def main():
         if regernerate_dataset:
             print(f"Found {len(files)} files.")
             # print(f"Using task: {args.task}")
-            print(f"Using trigger word: {trigger_word}")
+            # print(f"Using trigger word: {trigger_word}")
             if args.text_input:
                 print(f"Using text input: {args.text_input}")
 
             results: List[ResultEntry] = []
 
-            print("\nStarting image processing and caption generation...")
+            print("\nStarting image / video processing and caption generation...")
 
-            # TODO - load if needed foreach dataset-item with caching, make uv up/down grade the transformers package as needed
+            version = Version(transformers.__version__)
+
             # Load caption model
-            if is_video_dataset or qwen:
+            if version <= Version("4.53.1"):
+                model, processor = load_cation_model_florence2()
+            elif version >= Version("4.57.6"):
                 model, processor = load_caption_model_qwen3()
             else:
-                model, processor = load_cation_model_florence2()
+                raise Exception(
+                    f"No valid transformers version present, cannot load caption model, version was {version} valid versions are 4.53.1 or 4.57.6"
+                )
 
-            # Load upscale upscale model
+            # Load upscale model
             upscale_processor, upscale_model = load_upscaler_model()
 
             successful_processing = 0
             for i, file_path in enumerate(tqdm(files), 1):
-                # print(f"Processing {i}/{len(image_files)}: {image_path.name}")
-
                 is_video = False
                 is_image = False
                 if file_path.suffix in video_extensions:
@@ -264,34 +253,54 @@ def main():
                     print(f"Skipping file {file_path} - not a image or video file")
                     continue
 
+                target_file_path = (
+                    target_dir / file_path.name
+                )  # target_dir + filepath with extension
+
                 # load the source
                 if is_video:
-                    vfe = VideoFrameExtractor(file_path, upscale_model, upscale_processor, imgwidth, imgheight)
+                    from scripts.framerate_converter import interpolate_and_scale
+
+                    if not target_file_path.exists():
+                        target_file_path_str = str(target_file_path)
+                        interpolate_and_scale(
+                            file_path, target_file_path_str, framerate=16
+                        )
+                    vfe = VideoFrameExtractor(
+                        target_file_path,
+                        upscale_model,
+                        upscale_processor,
+                    )
                     video = vfe.get_video()
                 elif is_image:
                     img = Image.open(file_path).convert("RGB")
                     img = preprocess_image(
-                        img, upscale_processor, upscale_model, imgwidth, imgheight
+                        img,
+                        upscale_processor,
+                        upscale_model,
                     )
 
                 # Generate caption
                 caption = generate_caption(
                     model=model,
                     processor=processor,
-                    source_object=video if is_video else img,
+                    source_object=video if is_video else img if is_image else None,
                     task=task,
                     text_input=text_input,
+                    prompt=prompt,
                 )
 
                 if caption:
                     # Process caption with trigger word replacement
-                    processed_caption = process_caption_text(caption, trigger_word)
+                    if trigger_word != "":
+                        caption = process_caption_text(caption, trigger_word)
 
                     result_entry: ResultEntry = {
+                        "target_file_path": target_file_path,
                         "video": video,
                         "image": img,
                         "control": img,
-                        "caption": processed_caption,
+                        "caption": caption,
                     }
 
                     results.append(result_entry)
@@ -317,7 +326,7 @@ def main():
                 if results:
                     print(f"Saving {len(results)} images to: {target_dir}")
                     # save the image files in the results list
-                    save_entries = save_images(results, target_dir)
+                    save_entries = save(results, target_dir)
                     # create jsonl
                     jsonl_path = target_dir / "0_dataset.jsonl"
                     print(f"Writing {len(results)} results to JSONL: {jsonl_path}")
@@ -331,13 +340,20 @@ def main():
             if not write_task_handled:
                 if results:
                     # save the image files in the results list
-                    save_entries = save_images(results, target_dir)
+                    save_entries = save(results, target_dir)
                     # create text files
                     print(
                         f"Creating text (caption) files from {len(results)} results..."
                     )
                     for save_entry in save_entries:
-                        text_filename = Path(save_entry["image_path"] if "image_path" in save_entry else save_entry["video_path"]).stem + ".txt"
+                        text_filename = (
+                            Path(
+                                save_entry["image_path"]
+                                if "image_path" in save_entry
+                                else save_entry["video_path"]
+                            ).stem
+                            + ".txt"
+                        )
                         text_filepath = os.path.join(target_dir, text_filename)
                         Path(text_filepath).write_text(
                             save_entry["caption"], encoding="utf-8"
@@ -346,7 +362,7 @@ def main():
 
             # Print summary
             print("\nProcessing complete!")
-            print(f"Successfully processed {successful_processing}/{len(files)} " "videos" if is_video_dataset else "images")
+            print(f"Successfully processed {successful_processing}/{len(files)} files")
 
 
 if __name__ == "__main__":

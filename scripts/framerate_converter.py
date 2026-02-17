@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils import get_video_files
 
+
 def setup_argparse() -> argparse.ArgumentParser:
     """Set up command line argument parsing."""
     parser = argparse.ArgumentParser(description="")
@@ -20,7 +21,9 @@ def setup_argparse() -> argparse.ArgumentParser:
     return parser
 
 
-def interpolate_and_scale(input: str, output: str, framerate: int, width: int = 640, height: int = 640):
+def interpolate_and_scale(
+    input: str, output: str, framerate: int = 30, width: int = 640, height: int = 640
+):
     """
     Interpolate video to target framerate and optionally scale.
 
@@ -38,19 +41,19 @@ def interpolate_and_scale(input: str, output: str, framerate: int, width: int = 
         # Use scale filter
         if width is not None and height is not None:
             # Both dimensions specified
-            stream = stream.filter('scale', width, height)
+            stream = stream.filter("scale", width, height)
         elif width is not None:
             # Scale to width, keep aspect ratio
-            stream = stream.filter('scale', width, -1)
+            stream = stream.filter("scale", width, -1)
         elif height is not None:
             # Scale to height, keep aspect ratio
-            stream = stream.filter('scale', -1, height)
+            stream = stream.filter("scale", -1, height)
 
     # Apply interpolation
-    stream = stream.filter('minterpolate', fps=framerate)
+    stream = stream.filter("minterpolate", fps=framerate)
 
     # Output
-    stream.output(output).overwrite_output().run()
+    stream.output(output).overwrite_output().run(quiet=True)
 
 
 def main():

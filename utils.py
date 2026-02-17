@@ -1,9 +1,9 @@
 import av
+import numpy as np
 import torch
 from PIL import Image
 from pathlib import Path
 from typing import List, TypedDict, Tuple
-from numpy_pil_conv import pil_to_numpy
 from VideoInfo import VideoInfo
 
 torch_dtype = torch.float32
@@ -15,6 +15,7 @@ caption_extensions = {".txt"}
 
 
 class ResultEntry(TypedDict):
+    target_file_path: Path
     video: Tuple[List[Image.Image], VideoInfo]
     image: Image.Image
     control: Image.Image
@@ -25,7 +26,8 @@ class SaveImageEntry(TypedDict):
     """
     image_path: str
     control_image: str → target_image (how image changes, general starting image or the image itself)
-    caption: str"""
+    caption: str
+    """
 
     image_path: str
     control_path: str
@@ -36,7 +38,8 @@ class SaveVideoEntry(TypedDict):
     """
     video_path: str
     control_image: str → target_image (how image changes, general starting image or the image itself)
-    caption: str"""
+    caption: str
+    """
 
     video_path: str
     control_path: str
@@ -64,10 +67,13 @@ def get_video_files(directory: Path) -> List[Path]:
 
     return sorted(video_files)
 
-def save_video(path: str, video: Tuple[List[Image.Image], VideoInfo], max_fps=30) -> None:
+
+def save_video(
+    path: str, video: Tuple[List[np.ndarray], VideoInfo], max_fps=30
+) -> None:
     # Open container for writing
     container = av.open(path, mode="w")
-    
+
     frames, video_info = video
 
     int_fps = int(round(video_info.fps))
@@ -76,13 +82,11 @@ def save_video(path: str, video: Tuple[List[Image.Image], VideoInfo], max_fps=30
 
     # Create video stream
     stream = container.add_stream(video_info.codec, rate=int_fps)
-    stream.width = frames[0].width
-    stream.height = frames[0].height
+    stream.width = video_info.width
+    stream.height = video_info.height
     stream.pix_fmt = "yuv420p"  # required by most codecs
 
-    for img in frames:
-        frame = pil_to_numpy(img)
-
+    for frame in frames:
         # Convert numpy → AVFrame
         av_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
 
@@ -95,10 +99,12 @@ def save_video(path: str, video: Tuple[List[Image.Image], VideoInfo], max_fps=30
         container.mux(packet)
 
     container.close()
-    
 
-def save_images(results: List[ResultEntry], target_path: Path) -> List[SaveImageEntry | SaveVideoEntry]:
-    """Save images to directory."""
+
+def save(
+    results: List[ResultEntry], target_path: Path
+) -> List[SaveImageEntry | SaveVideoEntry]:
+    """Save images or videos to target directory."""
     save_entries = []
     # Create target directory if it does not exist
     target_path.mkdir(parents=True, exist_ok=True)
@@ -106,20 +112,19 @@ def save_images(results: List[ResultEntry], target_path: Path) -> List[SaveImage
         img = result["image"]
         video = result["video"]
         caption = result["caption"]
+        save_path = result["target_file_path"]
         if img is not None:
-            save_path = target_path / f"{i}.png"
             if not save_path.exists():
                 img.save(save_path, "PNG")
             save_entry = SaveImageEntry(
                 image_path=str(save_path), control_path=str(save_path), caption=caption
             )
         else:
-            save_path = target_path / f"{i}.mp4"
             if not save_path.exists():
                 save_video(str(save_path), video)
             save_entry = SaveVideoEntry(
                 video_path=str(save_path), control_path=str(save_path), caption=caption
             )
-            
+
         save_entries.append(save_entry)
     return save_entries

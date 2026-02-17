@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class VideoInfo:
     """Video metadata container"""
+
     duration: float  # in seconds
     fps: float
     width: int
