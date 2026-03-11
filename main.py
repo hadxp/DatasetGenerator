@@ -21,9 +21,10 @@ from typing import List, Tuple
 
 from caption_generator import (
     generate_caption,
-    process_caption_text,
     load_cation_model_florence2,
     load_caption_model_qwen3,
+    process_caption_text,
+    generate_caption_prompt,
 )
 from parquet import create_parquet, upload_to_hf
 from utils import (
@@ -36,6 +37,7 @@ from utils import (
 )
 from image_preprocessor import load_upscaler_model, preprocess_image
 from VideoFrameExtractor import VideoFrameExtractor, VideoInfo
+from scripts.framerate_converter import interpolate_and_scale
 
 
 def setup_argparse() -> argparse.ArgumentParser:
@@ -115,6 +117,24 @@ def setup_argparse() -> argparse.ArgumentParser:
         default="",
         help='Replaces the default prompt, words like "{prompt}" or "{template}" or "{person_template}" will be replaced',
     )
+    parser.add_argument(
+        "--show_prompt",
+        action="store_true",
+        default=False,
+        help="Shows the prompt before generating",
+    )
+    parser.add_argument(
+        "--person_lora",
+        action="store_true",
+        default=True,
+        help="Determines if the generated caption should contain a person description (not in caption = learn)",
+    )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=-1,
+        help=""
+    )
     return parser
 
 
@@ -131,7 +151,7 @@ def main():
     args = parser.parse_args()
 
     # get the arguments
-    trigger_word: str = args.triggerword.strip()
+    triggerword: str = args.triggerword.strip()
     task: str = args.task
     text_input: str = args.text_input
     jsonl: bool = args.jsonl
@@ -141,7 +161,10 @@ def main():
     dataset_names_arg: str = args.dataset
     search_dir: str = args.search_dir
     no_check: bool = args.no_check
-    prompt: bool = args.prompt
+    prompt: str = args.prompt
+    show_prompt: bool = args.show_prompt
+    person_lora: bool = args.person_lora
+    samples: int = args.samples
 
     can_upload_to_huggingface = (
         huggingface_token is not None and huggingface_repoid != ""
@@ -195,7 +218,6 @@ def main():
             sys.exit(1)
 
         # check the generation file
-
         generation_file_path = target_dir / "gen.txt"
 
         regernerate_dataset = True
@@ -217,7 +239,7 @@ def main():
         if regernerate_dataset:
             print(f"Found {len(files)} files.")
             # print(f"Using task: {args.task}")
-            # print(f"Using trigger word: {trigger_word}")
+            # print(f"Using trigger word: {triggerword}")
             if args.text_input:
                 print(f"Using text input: {args.text_input}")
 
@@ -237,20 +259,29 @@ def main():
                     f"No valid transformers version present, cannot load caption model, version was {version} valid versions are 4.53.1 or 4.57.6"
                 )
 
+            # set prompt to generate the caption
+            prompt = generate_caption_prompt(
+                prompt,
+                triggerword = triggerword if triggerword else "ohwx",
+                person_lora = person_lora,
+            )
+
+            if show_prompt:
+                print("-----------------------------------")
+                print(prompt)
+                print("-----------------------------------")
+
             # Load upscale model
             upscale_processor, upscale_model = load_upscaler_model()
 
+            print("Generating captions...")
             successful_processing = 0
-            for i, file_path in enumerate(tqdm(files), 1):
-                is_video = False
-                is_image = False
-                if file_path.suffix in video_extensions:
-                    is_video = True
-                if file_path.suffix in image_extensions:
-                    is_image = True
+            for num_image, file_path in enumerate(tqdm(files), 1):
+                is_video = True if file_path.suffix in video_extensions else False
+                is_image = True if file_path.suffix in image_extensions else False
 
                 if not is_video and not is_image:
-                    print(f"Skipping file {file_path} - not a image or video file")
+                    print(f"Skipping file {file_path} - not a image or video")
                     continue
 
                 target_file_path = (
@@ -259,8 +290,6 @@ def main():
 
                 # load the source
                 if is_video:
-                    from scripts.framerate_converter import interpolate_and_scale
-
                     if not target_file_path.exists():
                         target_file_path_str = str(target_file_path)
                         interpolate_and_scale(
@@ -278,6 +307,7 @@ def main():
                         img,
                         upscale_processor,
                         upscale_model,
+                        num_image,
                     )
 
                 # Generate caption
@@ -292,15 +322,25 @@ def main():
 
                 if caption:
                     # Process caption with trigger word replacement
-                    if trigger_word != "":
-                        caption = process_caption_text(caption, trigger_word)
+                    processed_caption = process_caption_text(caption, triggerword)
+
+                    if samples > 0:
+                        print("-----------------------------------")
+                        print(f"{file_path.name}")
+                        print("-----------------------------------")
+                        print(f"{caption}")
+                        print("-----------------------------------")
+                        print(f"{processed_caption}")
+                        print("-----------------------------------")
+                        if num_image == samples:
+                            sys.exit(0)
 
                     result_entry: ResultEntry = {
                         "target_file_path": target_file_path,
                         "video": video,
                         "image": img,
                         "control": img,
-                        "caption": caption,
+                        "caption": processed_caption,
                     }
 
                     results.append(result_entry)

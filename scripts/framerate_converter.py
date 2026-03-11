@@ -22,7 +22,9 @@ def setup_argparse() -> argparse.ArgumentParser:
 
 
 def interpolate_and_scale(
-    input: str, output: str, framerate: int = 30, width: int = 640, height: int = 640
+    input: str,
+    output: str,
+    framerate: int = 16,
 ):
     """
     Interpolate video to target framerate and optionally scale.
@@ -36,18 +38,7 @@ def interpolate_and_scale(
     """
     stream = ffmpeg.input(input)
 
-    # Apply scaling if dimensions provided
-    if width is not None or height is not None:
-        # Use scale filter
-        if width is not None and height is not None:
-            # Both dimensions specified
-            stream = stream.filter("scale", width, height)
-        elif width is not None:
-            # Scale to width, keep aspect ratio
-            stream = stream.filter("scale", width, -1)
-        elif height is not None:
-            # Scale to height, keep aspect ratio
-            stream = stream.filter("scale", -1, height)
+    stream = stream.filter("scale", "trunc(iw/2)*2", "trunc(ih/2)*2")
 
     # Apply interpolation
     stream = stream.filter("minterpolate", fps=framerate)

@@ -16,7 +16,7 @@ def load_upscaler_model() -> (
 ):
     """Load the DiffusionPipeline for upscaling."""
 
-    repo_id = "caidas/swin2SR-classical-sr-x2-64"
+    repo_id = "caidas/swin2SR-classical-sr-x4-64"
     print(f"Loading upscale({repo_id}) model...")
 
     try:
@@ -93,13 +93,15 @@ def sharpen_image(
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    if upscale_processor or upscale_model is None:
+    if upscale_processor is None or upscale_model is None:
         return img
 
     input_image = img
 
     inputs = upscale_processor(images=input_image, return_tensors="pt")
     pixel_values = inputs["pixel_values"]
+
+    pixel_values = pixel_values.to(next(upscale_model.parameters()).device)
 
     # 3. Run Model
     with torch.no_grad():
@@ -129,11 +131,13 @@ def preprocess_image(
     img: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
     upscale_model: Swin2SRForImageSuperResolution,
+    image_index: int,
 ) -> Image.Image:
     return preprocess_image_v2(
         img,
         upscale_processor,
         upscale_model,
+        image_index,
     )
 
 
@@ -141,6 +145,7 @@ def preprocess_image_v2(
     image: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
     upscale_model: Swin2SRForImageSuperResolution,
+    image_index: int,
     max_size: int = DEFAULT_MAX_SIZE,
 ) -> Image.Image:
     # Open and process image (sharpening happens inside sharpen_image)
@@ -190,7 +195,18 @@ def preprocess_image_v2(
     # Select bucket which has the nearest aspect ratio
     aspect_ratio = width / height
     bucket_resos.sort(key=lambda x: abs((x[0] / x[1]) - aspect_ratio))
-    bucket_reso = bucket_resos[0]
+
+    # Distribute images across available bucket resolutions
+    num_bucket_resos = len(bucket_resos)
+
+    if num_bucket_resos == 0:
+        # Fallback if no buckets available (shouldn't happen with proper filtering)
+        bucket_reso = (width_rounded, height_rounded)
+    else:
+        # Use image_index to cycle through available buckets
+        # This ensures different images get different resolutions
+        bucket_index = image_index % num_bucket_resos
+        bucket_reso = bucket_resos[bucket_index]
 
     # Resize to bucket
     image_np = resize_image_to_bucket(image, bucket_reso)

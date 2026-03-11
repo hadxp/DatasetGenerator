@@ -45,7 +45,7 @@ class VideoFrameExtractor:
             # Try to get total frames
             try:
                 total_frames = video_stream.frames
-            except:
+            except Exception:
                 total_frames = (
                     int(duration * fps) if duration and fps else 0
                 )  # Estimate total frames

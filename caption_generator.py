@@ -1,5 +1,7 @@
 import re
 import sys
+from pathlib import Path
+
 import numpy as np
 import torch
 import transformers
@@ -13,6 +15,7 @@ from transformers import (
     AutoProcessor,
     Qwen3VLForConditionalGeneration,
     Qwen3VLProcessor,
+    logging as transformers_logging,
 )
 
 
@@ -136,27 +139,52 @@ def generate_caption_florence2(
 
 
 DEFAULT_PROMPT = """
-You are a professional image annotator. Complete the following task based on the input image or video.
+You are a professional image annotator. Complete the following captioning task based on the input.
 Answer only with the generated caption for the input. Nothing additional.
 Skip phrases like "There is no visible text" from the output text.
 Focus on the describing task.
 
 Maintain authenticity and accuracy, avoid generalizations.
-Do not describe watermarks like "clideo.com"
+Do not describe watermarks like "clideo.com".
+
 """
 
+
 DESCRIPTOR_TEMPLATE = """
+Use the following template for caption generation:
 [Describe the actors and their poses/positions]
-[Clothing and accessories]
 [Describe the location, furniture, background elements]
 [Describe their actions, where they're looking, what they're doing]
-[Style, Camera movement, Camera angle]
+[Background Style, Camera movement, Camera angle]
 """
+
 
 PERSON_DESCRIPTION = """
 [Body shape/size, skin color, tattoos and skin details]
 [Hair color and style, eye color, eyebrow shape, lip color, etc]
+[Clothing and accessories]
 """
+
+def generate_caption_prompt(
+    prompt: str = "",
+    triggerword: str = "woman",
+    person_lora: bool = False,
+) -> str:
+    if prompt:
+        prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
+        prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
+        prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
+    elif person_lora:
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + f" Do not describe clothing and accessories and Hair color or style"
+    elif not person_lora:
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + PERSON_DESCRIPTION
+
+    prompt = (
+        prompt
+        + f'\nAlways put the triggerword "{triggerword}" at the beggining of the caption.'
+    )
+    
+    return prompt
 
 
 def generate_caption_qwen3(
@@ -168,21 +196,6 @@ def generate_caption_qwen3(
     prompt: str = "",
 ) -> str | None:
     """Generate caption for an image or frames"""
-
-    if prompt:
-        # (p
-        # .replace("{prompt}", DEFAULT_PROMPT)
-        # .replace("{template}", DESCRIPTOR_TEMPLATE)
-        # .replace("{person_template}", PERSON_DESCRIPTION)
-        # )
-        prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
-        prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
-        prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
-    else:
-        prompt = DEFAULT_PROMPT
-
-    # print(prompt)
-    # sys.exit(1)
 
     try:
         if isinstance(frames, Image.Image):
@@ -239,6 +252,8 @@ def generate_caption_qwen3(
         # Move inputs to same device/dtype as model
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
+        transformers_logging.set_verbosity_error()  # suppress all non-error messages, when generating
+
         # Generate caption
         with torch.inference_mode():
             generated_ids = model.generate(
@@ -292,39 +307,53 @@ def get_text_inputs(
     )
 
 
-def process_caption_text(caption: str, trigger_word: str) -> str:
+def generate_caption(
+    model: AutoModelForCausalLM | Qwen3VLForConditionalGeneration,
+    processor: AutoProcessor | Qwen3VLProcessor,
+    source_object,
+    task: str = "more_detailed_caption",
+    text_input: str = "",
+    prompt: str = "",
+) -> str | None:
+    if source_object is None:
+        return None
+    processor_class_name = processor.__class__.__name__.lower()
+    if "florence" in processor_class_name:
+        return generate_caption_florence2(
+            model, processor, source_object, task, text_input
+        )
+    elif "qwen" in processor_class_name:
+        return generate_caption_qwen3(
+            model,
+            processor,
+            source_object,
+            prompt=prompt,
+        )
+    else:
+        print("No caption generator found")
+    return None
+
+
+def process_caption_text(caption: str, triggerword: str) -> str:
     """Process and clean the caption text with trigger word replacement."""
     if not caption:
         return caption
 
     # Gender term replacements
     replacements = {
-        "woman": trigger_word,
-        "man": trigger_word,
-        "female": trigger_word,
-        "male": trigger_word,
-        "lady": trigger_word,
-        "gentleman": trigger_word,
-        "girl": trigger_word,
-        "boy": trigger_word,
+        "woman": triggerword,
+        "man": triggerword,
+        "female": triggerword,
+        "male": triggerword,
+        "lady": triggerword,
+        "gentleman": triggerword,
+        "girl": triggerword,
+        "boy": triggerword,
     }
 
     pronoun_replacements = {
-        " the ": f" the {trigger_word} ",  # Added spaces for safety
-        " The ": f" The {trigger_word} ",
-        " she ": f" the {trigger_word} ",
-        " She ": f" The {trigger_word} ",
-        " her ": f" the {trigger_word}'s ",
-        " Her ": f" The {trigger_word}'s ",
-        " hers ": f" the {trigger_word}'s ",
-        " Hers ": f" The {trigger_word}'s ",
-        " he ": f" the {trigger_word} ",
-        " He ": f" The {trigger_word} ",
-        " him ": f" the {trigger_word} ",
-        " Him ": f" The {trigger_word} ",
-        " his ": f" the {trigger_word}'s ",
-        " His ": f" The {trigger_word}'s ",
-        f" {trigger_word}{trigger_word} ": f" {trigger_word} ",  # Cleanup for double trigger words
+        f" {triggerword}{triggerword} ": f" {triggerword} ",  # Cleanup for double trigger words
+        f"{triggerword} A {triggerword} ": f"{triggerword} ",
         " leatthe ": " leather ",
     }
 
@@ -363,28 +392,6 @@ def process_caption_text(caption: str, trigger_word: str) -> str:
     return processed_caption.strip()
 
 
-def generate_caption(
-    model: AutoModelForCausalLM | Qwen3VLForConditionalGeneration,
-    processor: AutoProcessor | Qwen3VLProcessor,
-    source_object,
-    task: str = "more_detailed_caption",
-    text_input: str = "",
-    prompt: str = "",
-) -> str | None:
-    if source_object is None:
-        return None
-    processor_class_name = processor.__class__.__name__.lower()
-    if "florence" in processor_class_name:
-        return generate_caption_florence2(
-            model, processor, source_object, task, text_input
-        )
-    elif "qwen" in processor_class_name:
-        return generate_caption_qwen3(model, processor, source_object, prompt=prompt)
-    else:
-        print("No caption generator found")
-    return None
-
-
 def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load Florence2 model and processor with proper data type handling."""
     repoid = "microsoft/Florence-2-large"
@@ -398,7 +405,7 @@ def load_cation_model_florence2() -> Tuple[AutoModelForCausalLM, AutoProcessor]:
 
     try:
         model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(
-            repoid, trust_remote_code=True, torch_dtype=torch_dtype
+            repoid, trust_remote_code=True, dtype=torch_dtype
         )
 
         model = model.to(torch_device)  # move the model to cuda

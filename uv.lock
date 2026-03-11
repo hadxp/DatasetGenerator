@@ -394,7 +394,7 @@ requires-dist = [
     { name = "ffmpeg-python" },
     { name = "opencv-contrib-python" },
     { name = "pillow" },
-    { name = "ruff", specifier = ">=0.14.14" },
+    { name = "ruff" },
     { name = "timm" },
     { name = "torch", specifier = "==2.7.1", index = "https://download.pytorch.org/whl/cu128" },
     { name = "tqdm" },
