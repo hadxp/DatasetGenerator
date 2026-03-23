@@ -1,18 +1,17 @@
 import os
-
-import numpy as np
 import torch
+import numpy as np
 from PIL import Image
 from gfpgan import GFPGANer
 from utils import working_dir
+from realesrgan import RealESRGANer
 from basicsr.archs.rrdbnet_arch import RRDBNet
-from basicsr.utils.realesrgan_utils import RealESRGANer
 from basicsr.utils.download_util import load_file_from_url
 
 models = {
     "realesrgan": {
         "url": "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/RealESRGAN_x2plus.pth",
-        "dir": f"{working_dir / 'CodeFormer' / 'weights' / 'realesrgan'}",
+        "dir": f"{working_dir / 'weights'}",
         "filename": "RealESRGAN_x2plus.pth",
     },
     "gfpgan_RestoreFormer": {
@@ -34,7 +33,7 @@ def check_ckpts():
             )
 
 
-def set_realesrgan() -> RealESRGANer:
+def set_realesrgan() -> GFPGANer:
     half = True if torch.cuda.is_available() else False
     model = RRDBNet(
         num_in_ch=3,
@@ -70,8 +69,7 @@ def set_realesrgan() -> RealESRGANer:
     return restorer
 
 
-def realesgan_upsample(img: Image.Image, upsampler_model: GFPGANer) -> Image.Image:
-    # restore faces and background if necessary
+def upsample(img: Image.Image, upsampler_model: GFPGANer) -> Image.Image:
     cropped_faces, restored_faces, restored_img = upsampler_model.enhance(
         np.array(img),
         has_aligned=False,

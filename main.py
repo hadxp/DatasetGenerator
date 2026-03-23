@@ -6,7 +6,6 @@ Florence-2 for caption generation, text replacement with triggerword in generate
 usage:
 python main.py [dataset_names]
 """
-
 import os
 import sys
 import json
@@ -17,14 +16,6 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
 from packaging.version import Version
-from caption_generator import (
-    generate_caption,
-    load_cation_model_florence2,
-    load_caption_model_qwen3,
-    process_caption_text,
-    generate_caption_prompt,
-)
-from parquet import create_parquet, upload_to_hf
 from utils import (
     ResultEntry,
     get_image_files,
@@ -33,7 +24,15 @@ from utils import (
     image_extensions,
     video_extensions,
 )
-from image_preprocessor import load_upscaler_model, preprocess_image
+from caption_generator import (
+    generate_caption,
+    load_cation_model_florence2,
+    load_caption_model_qwen3,
+    process_caption_text,
+    generate_caption_prompt,
+)
+from parquet import create_parquet, upload_to_hf
+from image_preprocessor import load_upscaler_model, preprocess_image, load_restoration_model
 from VideoFrameExtractor import VideoFrameExtractor, VideoInfo
 from scripts.framerate_converter import interpolate_and_scale
 
@@ -191,6 +190,9 @@ def main():
             if folder.is_dir() and dataset_name in folder.name:
                 dataset_name_folder = folder
 
+        if dataset_name_folder is None:
+            raise Exception(f"No dataset named '{dataset_name}' found in directory '{datasets_path}'")
+
         dataset_dir = datasets_path / dataset_name_folder
 
         print(f"Dataset folder is: {dataset_name_folder}")
@@ -269,13 +271,12 @@ def main():
                 print("-----------------------------------")
 
             # Load upscale model
-            upscale_processor, upscale_model = load_upscaler_model()
-            from image_preprocessor import load_restoration_model
-            restore_model, restore_scale = load_restoration_model()
+            upscale_processor, upscale_model = None #load_upscaler_model()
+            restore_model = load_restoration_model()
 
             print("Generating captions...")
             successful_processing = 0
-            for num_image, file_path in enumerate(tqdm(files), 1):
+            for image_index, file_path in enumerate(tqdm(files), 1):
                 is_video = True if file_path.suffix.lower() in video_extensions else False
                 is_image = True if file_path.suffix.lower() in image_extensions else False
 
@@ -304,9 +305,9 @@ def main():
                     img = Image.open(file_path).convert("RGB")
                     img = preprocess_image(
                         img,
-                        upscale_processor,
-                        upscale_model,
-                        num_image,
+                        upscale_processor=upscale_processor,
+                        upscale_model=upscale_model,
+                        restore_model=restore_model,
                     )
 
                 # Generate caption
@@ -331,7 +332,7 @@ def main():
                         print("-----------------------------------")
                         print(f"{processed_caption}")
                         print("-----------------------------------")
-                        if num_image == samples:
+                        if image_index == samples:
                             sys.exit(0)
 
                     result_entry: ResultEntry = {

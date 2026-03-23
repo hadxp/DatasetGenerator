@@ -8,20 +8,22 @@ dependencies = [
     "wheel",
     "packaging",
     "setuptools",
-	"torch==2.7.1",
-	"transformers==4.57.6",
-	"diffusers",
-	"pillow",
-	"accelerate",
-	"einops",
-	"timm",
-	"datasets",
-	"tqdm",
-	"av",
-	"ffmpeg-python",
-	"opencv-contrib-python",
-	"ruff",
+    "torch==2.7.1",
+    "transformers==4.57.6",
+    "diffusers",
+    "pillow",
+    "accelerate",
+    "einops",
+    "timm",
+    "datasets",
+    "tqdm",
+    "av",
+    "ffmpeg-python",
+    "opencv-contrib-python",
+    "ruff",
     "gfpgan",
+    "basicsr",
+    "realesrgan",
 ]
 
 [[tool.uv.index]]
@@ -36,3 +38,4 @@ url = "https://pypi.org/simple"
 [tool.uv.sources]
 # Tell uv to look for torch, on the custom index
 torch = [ { index = "pytorch-cu128" } ]
+torchvision = [ { index = "pytorch-cu128" } ]

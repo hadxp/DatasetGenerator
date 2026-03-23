@@ -8,9 +8,18 @@ from pathlib import Path
 from VideoInfo import VideoInfo
 from typing import List, TypedDict, Tuple
 
+# add codeformer to system path, to import basicsr
 working_dir: Path = Path.cwd()
-path: Path = working_dir / "CodeFormer"
-sys.path.append(str(path))
+basicsr_path: Path = working_dir / "BasicSR"
+sys.path.append(str(basicsr_path))
+
+import subprocess
+subprocess.run(
+    ["uv", "pip", "uninstall", "basicsr"],
+    capture_output=True,
+    text=True,
+    check=False,
+)
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 torch.backends.cuda.enable_flash_sdp(True)

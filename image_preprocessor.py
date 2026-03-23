@@ -4,9 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 from typing import Tuple, Union
-from SwinIR.run_infer import SwinIR
-from SwinIR.run_infer import improve_image_quality
-from SwinIR.run_infer import load_restoration_model # unused but needed
+from upsample import check_ckpts, set_realesrgan, upsample
 from utils import torch_device, torch_dtype, get_detailed_memory_usage
 from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
 
@@ -47,6 +45,10 @@ def load_upscaler_model() -> (
         print(f"Warning: Could not load upscaler model. Skipping upscaling. Error: {e}")
         # Return a mock object or None if upscaler is critical
         return None
+    
+def load_restoration_model():
+    check_ckpts()
+    return set_realesrgan()
 
 
 def resize_image_to_bucket(
@@ -107,9 +109,6 @@ def sharpen_image(
     if upscale_processor is None or upscale_model is None:
         return img
 
-    #get_detailed_memory_usage()
-    from SwinIR.main_test_swinir import setup
-
     try:
         # Get model's dtype and device
         model_dtype = next(upscale_model.parameters()).dtype
@@ -166,27 +165,28 @@ def preprocess_image(
     img: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
     upscale_model: Swin2SRForImageSuperResolution,
-    restore_model: SwinIR,
-    restore_scale: int,
-    image_index: int,
+    restore_model,
 ) -> Image.Image:
     return preprocess_image_v3(
         img,
-        upscale_processor,
-        upscale_model,
-        image_index,
+        upscale_processor=upscale_processor,
+        upscale_model=upscale_model,
+        restore_model=restore_model,
     )
 
 
 def preprocess_image_v3(
     image: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
-    restore_model: S,
-    image_index: int,
+    upscale_model: Swin2SRForImageSuperResolution,
+    restore_model,
     max_size: int = DEFAULT_MAX_SIZE,
 ) -> Image.Image:
     
-    image = improve_image_quality(image, upscale_processor, upscale_model)
+    if restore_model is not None:
+        image = upsample(image, restore_model)
+    if upscale_processor is not None and upscale_model is not None:
+        image = sharpen_image(image, upscale_processor, upscale_model)
 
     """Resize image to a suitable resolution"""
     min_area = 256 * 256
@@ -239,11 +239,6 @@ def preprocess_image_v3(
     if num_bucket_resos == 0:
         # Fallback if no buckets available (shouldn't happen with proper filtering)
         bucket_reso = (width_rounded, height_rounded)
-    else:
-        # Use image_index to cycle through available buckets
-        # This ensures different images get different resolutions
-        bucket_index = image_index % num_bucket_resos
-        bucket_reso = bucket_resos[bucket_index]
 
     # Resize to bucket
     image_np = resize_image_to_bucket(image, bucket_reso)
