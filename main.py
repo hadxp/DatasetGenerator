@@ -11,14 +11,12 @@ import os
 import sys
 import json
 import argparse
-
 import transformers
 from PIL import Image
-from packaging.version import Version
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
-
+from packaging.version import Version
 from caption_generator import (
     generate_caption,
     load_cation_model_florence2,
@@ -38,7 +36,6 @@ from utils import (
 from image_preprocessor import load_upscaler_model, preprocess_image
 from VideoFrameExtractor import VideoFrameExtractor, VideoInfo
 from scripts.framerate_converter import interpolate_and_scale
-
 
 def setup_argparse() -> argparse.ArgumentParser:
     """Set up command line argument parsing."""
@@ -273,12 +270,14 @@ def main():
 
             # Load upscale model
             upscale_processor, upscale_model = load_upscaler_model()
+            from image_preprocessor import load_restoration_model
+            restore_model, restore_scale = load_restoration_model()
 
             print("Generating captions...")
             successful_processing = 0
             for num_image, file_path in enumerate(tqdm(files), 1):
-                is_video = True if file_path.suffix in video_extensions else False
-                is_image = True if file_path.suffix in image_extensions else False
+                is_video = True if file_path.suffix.lower() in video_extensions else False
+                is_image = True if file_path.suffix.lower() in image_extensions else False
 
                 if not is_video and not is_image:
                     print(f"Skipping file {file_path} - not a image or video")

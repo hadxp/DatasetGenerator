@@ -1,18 +1,26 @@
+import os
 import av
-import numpy as np
+import sys
 import torch
+import numpy as np
 from PIL import Image
 from pathlib import Path
-from typing import List, TypedDict, Tuple
 from VideoInfo import VideoInfo
+from typing import List, TypedDict, Tuple
 
+working_dir: Path = Path.cwd()
+path: Path = working_dir / "CodeFormer"
+sys.path.append(str(path))
+
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch_dtype = torch.float32
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
 image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 video_extensions = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".wmv", ".m4v"}
 caption_extensions = {".txt"}
-
 
 class ResultEntry(TypedDict):
     target_file_path: Path
@@ -128,3 +136,54 @@ def save(
 
         save_entries.append(save_entry)
     return save_entries
+
+
+def get_cuda_free_memory_gb(device: torch.device = None) -> float:
+    if device is None:
+        device = torch.cuda.current_device()
+
+    memory_stats = torch.cuda.memory_stats(device)
+    bytes_active = memory_stats["active_bytes.all.current"]
+    bytes_reserved = memory_stats["reserved_bytes.all.current"]
+    bytes_free_cuda, _ = torch.cuda.mem_get_info(device)
+    bytes_inactive_reserved = bytes_reserved - bytes_active
+    bytes_total_available = bytes_free_cuda + bytes_inactive_reserved
+    return bytes_total_available / (1024**3)
+
+
+def get_detailed_memory_usage(device: torch.device = None):
+    """Detailed memory breakdown for debugging"""
+    if device is None:
+        device = torch.cuda.current_device()
+
+    # Get PyTorch memory stats
+    memory_stats = torch.cuda.memory_stats(device)
+
+    active = memory_stats.get("active_bytes.all.current", 0) / (1024 ** 3)
+    reserved = memory_stats.get("reserved_bytes.all.current", 0) / (1024 ** 3)
+
+    # Get CUDA stats
+    free_cuda, total_cuda = torch.cuda.mem_get_info(device)
+    free_cuda_gb = free_cuda / (1024 ** 3)
+    total_cuda_gb = total_cuda / (1024 ** 3)
+
+    # Calculate usable
+    inactive_reserved = reserved - active
+    usable = free_cuda_gb + inactive_reserved
+
+    print(f"GPU {device}:")
+    print(f"  Total capacity: {total_cuda_gb:.2f} GB")
+    print(f"  CUDA reported free: {free_cuda_gb:.2f} GB")
+    print(f"  PyTorch reserved: {reserved:.2f} GB")
+    print(f"  PyTorch active: {active:.2f} GB")
+    print(f"  PyTorch inactive (cache): {inactive_reserved:.2f} GB")
+    print(f"  → Usable memory: {usable:.2f} GB")
+
+    return {
+        'total': total_cuda_gb,
+        'cuda_free': free_cuda_gb,
+        'pytorch_reserved': reserved,
+        'pytorch_active': active,
+        'pytorch_cache': inactive_reserved,
+        'usable': usable
+    }

@@ -1,15 +1,17 @@
 import cv2
+import math
 import torch
 import numpy as np
 from PIL import Image
-import math
 from typing import Tuple, Union
-from utils import torch_device, torch_dtype
+from SwinIR.run_infer import SwinIR
+from SwinIR.run_infer import improve_image_quality
+from SwinIR.run_infer import load_restoration_model # unused but needed
+from utils import torch_device, torch_dtype, get_detailed_memory_usage
 from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
 
 IMAGE_FACTOR = 28  # The image size must be divisible by this factor
-DEFAULT_MAX_SIZE = 1280
-
+DEFAULT_MAX_SIZE = 640
 
 def load_upscaler_model() -> (
     Tuple[Swin2SRImageProcessor, Swin2SRForImageSuperResolution] | None
@@ -20,15 +22,25 @@ def load_upscaler_model() -> (
     print(f"Loading upscale({repo_id}) model...")
 
     try:
-        upscale_processor: Swin2SRImageProcessor = (
-            Swin2SRImageProcessor.from_pretrained(repo_id, trust_remote_code=True)
-        )
         upscale_model: Swin2SRForImageSuperResolution = (
             Swin2SRForImageSuperResolution.from_pretrained(
-                repo_id, trust_remote_code=True, dtype=torch_dtype
+                repo_id, trust_remote_code=True, dtype=torch.bfloat16,
             )
         )
         upscale_model = upscale_model.to(torch_device)
+        
+        upscale_processor: Swin2SRImageProcessor = (
+            Swin2SRImageProcessor.from_pretrained(repo_id, trust_remote_code=True)
+        )
+        
+        # Set model to eval mode
+        upscale_model.eval()
+
+        # Optional: compile for performance (PyTorch 2.0+)
+        if hasattr(torch, "compile"):
+            model = torch.compile(upscale_model)
+            print("Model compiled with torch.compile()")
+        
         print(f"Model loaded on {torch_device} with dtype {torch_dtype}")
         return upscale_processor, upscale_model
     except Exception as e:
@@ -89,40 +101,63 @@ def sharpen_image(
 ) -> Image.Image:
     """Sharpens image"""
 
-    # Convert to RGB if necessary
     if img.mode != "RGB":
         img = img.convert("RGB")
 
     if upscale_processor is None or upscale_model is None:
         return img
 
-    input_image = img
+    #get_detailed_memory_usage()
+    from SwinIR.main_test_swinir import setup
 
-    inputs = upscale_processor(images=input_image, return_tensors="pt")
-    pixel_values = inputs["pixel_values"]
+    try:
+        # Get model's dtype and device
+        model_dtype = next(upscale_model.parameters()).dtype
+        model_device = next(upscale_model.parameters()).device
+        
+        inputs = upscale_processor(images=img, return_tensors="pt")
+        pixel_values = inputs["pixel_values"]
+        pixel_values = pixel_values.to(device=model_device, dtype=model_dtype)
 
-    pixel_values = pixel_values.to(next(upscale_model.parameters()).device)
+        # Run Model
+        with torch.no_grad():
+            outputs = upscale_model(pixel_values=pixel_values)
 
-    # 3. Run Model
-    with torch.no_grad():
-        outputs = upscale_model(pixel_values=pixel_values)
+        # Process output
+        upscaled_tensor = outputs.reconstruction
 
-    # Correct Post-processing
-    # The upscaled tensor is accessed via the 'reconstruction' attribute
-    upscaled_tensor = outputs.reconstruction
+        # Convert to float32 if needed (bfloat16, float16, etc.)
+        if upscaled_tensor.dtype != torch.float32:
+            upscaled_tensor = upscaled_tensor.float()
 
-    # Move to CPU, remove batch dim (squeeze), clip, and convert to NumPy
-    # The tensor is in (1, C, H, W) format, normalized to [0, 1].
-    upscaled_np = upscaled_tensor.squeeze(0).cpu().clamp(0, 1).numpy()
+        # Move to CPU and convert
+        upscaled_np = upscaled_tensor.squeeze(0).cpu().clamp(0, 1).numpy()
+        upscaled_np = (upscaled_np * 255.0).astype(np.uint8)
+        upscaled_np = np.transpose(upscaled_np, (1, 2, 0))
+        upscaled_image = Image.fromarray(upscaled_np)
 
-    # Scale to [0, 255] and change data type to 8-bit integer
-    upscaled_np = (upscaled_np * 255.0).astype(np.uint8)
+    finally:
+        try:
+            try:
+                # Aggressive cleanup
+                del inputs
+                del pixel_values
+                del outputs
+                del upscaled_tensor
+            finally:
+                pass
+    
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+    
+            # Force garbage collection
+            import gc
+            gc.collect()
+        finally:
+            pass
 
-    # Permute dimensions from (C, H, W) to (H, W, C) for PIL
-    upscaled_np = np.transpose(upscaled_np, (1, 2, 0))
-
-    # Convert NumPy array to PIL Image object
-    upscaled_image = Image.fromarray(upscaled_np)
+    #get_detailed_memory_usage()
+    #print("-----------")
 
     return upscaled_image
 
@@ -131,15 +166,91 @@ def preprocess_image(
     img: Image.Image,
     upscale_processor: Swin2SRImageProcessor,
     upscale_model: Swin2SRForImageSuperResolution,
+    restore_model: SwinIR,
+    restore_scale: int,
     image_index: int,
 ) -> Image.Image:
-    return preprocess_image_v2(
+    return preprocess_image_v3(
         img,
         upscale_processor,
         upscale_model,
         image_index,
     )
 
+
+def preprocess_image_v3(
+    image: Image.Image,
+    upscale_processor: Swin2SRImageProcessor,
+    restore_model: S,
+    image_index: int,
+    max_size: int = DEFAULT_MAX_SIZE,
+) -> Image.Image:
+    
+    image = improve_image_quality(image, upscale_processor, upscale_model)
+
+    """Resize image to a suitable resolution"""
+    min_area = 256 * 256
+    max_area = max_size * max_size
+    width, height = image.size
+    width_rounded = int((width / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
+    height_rounded = int((height / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
+
+    bucket_resos = []
+    if width_rounded * height_rounded < min_area:
+        # Scale up to min area
+        scale_factor = math.sqrt(min_area / (width_rounded * height_rounded))
+        new_width = math.ceil(width * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+        new_height = math.ceil(height * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+
+        # Add to bucket resolutions: default and slight variations for keeping aspect ratio
+        bucket_resos.append((new_width, new_height))
+        bucket_resos.append((new_width + IMAGE_FACTOR, new_height))
+        bucket_resos.append((new_width, new_height + IMAGE_FACTOR))
+    elif width_rounded * height_rounded > max_area:
+        # Scale down to max area
+        scale_factor = math.sqrt(max_area / (width_rounded * height_rounded))
+        new_width = math.floor(width * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+        new_height = math.floor(height * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+
+        # Add to bucket resolutions: default and slight variations for keeping aspect ratio
+        bucket_resos.append((new_width, new_height))
+        bucket_resos.append((new_width - IMAGE_FACTOR, new_height))
+        bucket_resos.append((new_width, new_height - IMAGE_FACTOR))
+    else:
+        # Keep original resolution, but add slight variations for keeping aspect ratio
+        bucket_resos.append((width_rounded, height_rounded))
+        bucket_resos.append((width_rounded - IMAGE_FACTOR, height_rounded))
+        bucket_resos.append((width_rounded, height_rounded - IMAGE_FACTOR))
+        bucket_resos.append((width_rounded + IMAGE_FACTOR, height_rounded))
+        bucket_resos.append((width_rounded, height_rounded + IMAGE_FACTOR))
+
+    # Min/max area filtering
+    bucket_resos = [
+        (w, h) for w, h in bucket_resos if w * h >= min_area and w * h <= max_area
+    ]
+
+    # Select bucket which has the nearest aspect ratio
+    aspect_ratio = width / height
+    bucket_resos.sort(key=lambda x: abs((x[0] / x[1]) - aspect_ratio))
+
+    # Distribute images across available bucket resolutions
+    num_bucket_resos = len(bucket_resos)
+
+    if num_bucket_resos == 0:
+        # Fallback if no buckets available (shouldn't happen with proper filtering)
+        bucket_reso = (width_rounded, height_rounded)
+    else:
+        # Use image_index to cycle through available buckets
+        # This ensures different images get different resolutions
+        bucket_index = image_index % num_bucket_resos
+        bucket_reso = bucket_resos[bucket_index]
+
+    # Resize to bucket
+    image_np = resize_image_to_bucket(image, bucket_reso)
+
+    # Convert back to PIL
+    image = Image.fromarray(image_np)
+    return image
 
 def preprocess_image_v2(
     image: Image.Image,
@@ -148,8 +259,21 @@ def preprocess_image_v2(
     image_index: int,
     max_size: int = DEFAULT_MAX_SIZE,
 ) -> Image.Image:
-    # Open and process image (sharpening happens inside sharpen_image)
-    image = sharpen_image(image, upscale_processor, upscale_model)
+    try:
+        # Open and process image (sharpening happens inside sharpen_image)
+        image = sharpen_image(image, upscale_processor, upscale_model)
+    except torch.cuda.OutOfMemoryError:
+        print("OOM detected, clearing cache and retrying...")
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+
+        # Wait a bit for memory to be freed
+        import time
+        time.sleep(0.5)
+
+        # Retry once
+        image = sharpen_image(image, upscale_processor, upscale_model)
 
     """Resize image to a suitable resolution"""
     min_area = 256 * 256

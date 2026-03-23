@@ -1,6 +1,5 @@
 import re
 import sys
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -10,6 +9,7 @@ from typing import Tuple, List
 from VideoInfo import VideoInfo
 from packaging.version import Version
 from utils import torch_device, torch_dtype
+from utils import get_cuda_free_memory_gb
 from transformers import (
     AutoModelForCausalLM,
     AutoProcessor,
@@ -267,15 +267,18 @@ def generate_caption_qwen3(
                 use_cache=False,
             )
 
-        # This releases unused cached memory back to the GPU driver.
-        # It does not free tensors you still hold references to.
-        torch.cuda.empty_cache()
-
         # Remove the input tokens from the output, leaving only the newly generated tokens
         generated_ids_trimmed = [
             out_ids[len(in_ids) :]
             for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
         ]
+
+        del inputs
+        # This releases unused cached memory back to the GPU driver.
+        # It does not free tensors you still hold references to.
+        torch.cuda.empty_cache()
+        
+        #print("get_cuda_free_memory_gb_caption_gen: " + str(get_cuda_free_memory_gb(torch_device)))
 
         # Decode the generated text
         generated_text = processor.batch_decode(
