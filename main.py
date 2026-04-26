@@ -16,6 +16,8 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
 from packaging.version import Version
+
+import utils
 from utils import (
     ResultEntry,
     get_image_files,
@@ -32,7 +34,7 @@ from caption_generator import (
     generate_caption_prompt,
 )
 from parquet import create_parquet, upload_to_hf
-from image_preprocessor import load_upscaler_model, preprocess_image, load_restoration_model
+from image_preprocessor import preprocess_image
 from VideoFrameExtractor import VideoFrameExtractor, VideoInfo
 from scripts.framerate_converter import interpolate_and_scale
 
@@ -131,6 +133,12 @@ def setup_argparse() -> argparse.ArgumentParser:
         default=-1,
         help=""
     )
+    parser.add_argument(
+        "--class_prompt",
+        type=str,
+        default="",
+        help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
+    )
     return parser
 
 
@@ -161,6 +169,7 @@ def main():
     show_prompt: bool = args.show_prompt
     person_lora: bool = args.person_lora
     samples: int = args.samples
+    class_prompt: str = args.class_prompt
 
     can_upload_to_huggingface = (
         huggingface_token is not None and huggingface_repoid != ""
@@ -207,7 +216,7 @@ def main():
         target_dir = dataset_dir / "out"
 
         # Get image files
-        print(f"Scanning for images in {source_dir}...")
+        print(f"Scanning for files in {source_dir}...")
         files = get_image_files(source_dir)
         if len(files) <= 0:
             files = get_video_files(source_dir)
@@ -262,6 +271,7 @@ def main():
             prompt = generate_caption_prompt(
                 prompt,
                 triggerword = triggerword if triggerword else "ohwx",
+                class_prompt = class_prompt if class_prompt else None,
                 person_lora = person_lora,
             )
 
@@ -271,12 +281,15 @@ def main():
                 print("-----------------------------------")
 
             # Load upscale model
-            upscale_processor, upscale_model = None #load_upscaler_model()
-            restore_model = load_restoration_model()
+            #upscale_processor, upscale_model = load_upscaler_model()
+            upscale_processor = None
+            upscale_model = None
 
             print("Generating captions...")
             successful_processing = 0
-            for image_index, file_path in enumerate(tqdm(files), 1):
+            # sort files
+            sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
+            for image_index, file_path in enumerate(tqdm(sorted_files), 1):
                 is_video = True if file_path.suffix.lower() in video_extensions else False
                 is_image = True if file_path.suffix.lower() in image_extensions else False
 
@@ -284,30 +297,30 @@ def main():
                     print(f"Skipping file {file_path} - not a image or video")
                     continue
 
-                target_file_path = (
+                file_path_in_target_dir: Path = (
                     target_dir / file_path.name
                 )  # target_dir + filepath with extension
 
                 # load the source
                 if is_video:
-                    if not target_file_path.exists():
-                        target_file_path_str = str(target_file_path)
+                    if not file_path_in_target_dir.exists():
+                        os.makedirs(target_dir, exist_ok=True)
+                        target_file_path_str = str(file_path_in_target_dir)
                         interpolate_and_scale(
                             file_path, target_file_path_str, framerate=16
                         )
                     vfe = VideoFrameExtractor(
-                        target_file_path,
-                        upscale_model,
-                        upscale_processor,
+                        file_path=file_path_in_target_dir,
+                        upscale=False,
+                        upsample=True,
                     )
                     video = vfe.get_video()
                 elif is_image:
                     img = Image.open(file_path).convert("RGB")
                     img = preprocess_image(
                         img,
-                        upscale_processor=upscale_processor,
-                        upscale_model=upscale_model,
-                        restore_model=restore_model,
+                        upscale=True,
+                        upsample=True,
                     )
 
                 # Generate caption
@@ -322,21 +335,23 @@ def main():
 
                 if caption:
                     # Process caption with trigger word replacement
-                    processed_caption = process_caption_text(caption, triggerword)
+                    #processed_caption = process_caption_text(caption, triggerword)
+                    processed_caption = caption
 
                     if samples > 0:
                         print("-----------------------------------")
                         print(f"{file_path.name}")
                         print("-----------------------------------")
                         print(f"{caption}")
-                        print("-----------------------------------")
-                        print(f"{processed_caption}")
+                        if processed_caption != caption:
+                            print("-----------------------------------")
+                            print(f"{processed_caption}")
                         print("-----------------------------------")
                         if image_index == samples:
                             sys.exit(0)
 
                     result_entry: ResultEntry = {
-                        "target_file_path": target_file_path,
+                        "file_path_in_target_dir": file_path_in_target_dir,
                         "video": video,
                         "image": img,
                         "control": img,

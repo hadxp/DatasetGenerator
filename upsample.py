@@ -1,10 +1,12 @@
 import os
+import io
 import torch
-import numpy as np
 from PIL import Image
 from gfpgan import GFPGANer
 from utils import working_dir
 from realesrgan import RealESRGANer
+from contextlib import redirect_stdout
+from numpy_pil_conv import numpy_to_pil, pil_to_numpy
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
 
@@ -32,8 +34,9 @@ def check_ckpts():
                 url=model_url, model_dir=model_dir, progress=True, file_name=model_name
             )
 
+_upsampler_model: GFPGANer = None
 
-def set_realesrgan() -> GFPGANer:
+def load_upsampler() -> GFPGANer:
     half = True if torch.cuda.is_available() else False
     model = RRDBNet(
         num_in_ch=3,
@@ -41,7 +44,7 @@ def set_realesrgan() -> GFPGANer:
         num_feat=64,
         num_block=23,
         num_grow_ch=32,
-        scale=2,
+        scale=2, # 1=better for removing artifacts or denoising, 2 = Better for preserving fine details
     )
     realesrgan_model_path = os.path.join(
         models["realesrgan"]["dir"], models["realesrgan"]["filename"]
@@ -65,15 +68,23 @@ def set_realesrgan() -> GFPGANer:
         arch=arch,
         channel_multiplier=2,
         bg_upsampler=upsampler)
-
+    
+    global _upsampler_model
+    _upsampler_model = restorer
+    
     return restorer
 
 
-def upsample(img: Image.Image, upsampler_model: GFPGANer) -> Image.Image:
-    cropped_faces, restored_faces, restored_img = upsampler_model.enhance(
-        np.array(img),
-        has_aligned=False,
-        paste_back=True,
-        weight=0.5 # Balanced between quality and identity
-    )
-    return restored_img
+def upsample(img: Image.Image) -> Image.Image:
+    # Suppress RealESRGAN tile printing
+    with redirect_stdout(io.StringIO()):
+        if _upsampler_model is None:
+            check_ckpts()
+            load_upsampler()
+        cropped_faces, restored_faces, restored_img = _upsampler_model.enhance(
+            pil_to_numpy(img),
+            has_aligned=False,
+            paste_back=True,
+            weight=0.5 # Balance between quality and identity
+        )
+        return numpy_to_pil(restored_img)

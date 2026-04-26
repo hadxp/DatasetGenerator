@@ -19,6 +19,74 @@ from transformers import (
 )
 
 
+DEFAULT_PROMPT = """
+You are a professional image annotator. Complete the following captioning task based on the input.
+Answer only with the generated caption for the input. Nothing additional.
+Skip phrases like "There is no visible text" from the output text.
+Focus on the describing task.
+
+Maintain authenticity and accuracy, avoid generalizations.
+Do not describe watermarks like "clideo.com".
+
+"""
+
+
+DESCRIPTOR_TEMPLATE = """
+Use the following template for caption generation:
+[Describe the actors and their poses/positions]
+[Describe the location, furniture, background elements]
+[Describe their actions, where they're looking, what they're doing]
+[Background Style, Camera movement, Camera angle]
+"""
+
+
+PERSON_DESCRIPTION = """
+[Body shape/size, skin color, skin details]
+[Hair color and style, eye color, eyebrow shape, lip color, etc]
+[Clothing and accessories]
+"""
+
+def generate_caption_prompt(
+    prompt: str = None,
+    triggerword: str = "ohwx",
+    class_prompt: str = None,
+    person_lora: bool = False,
+) -> str:
+    """
+    A person lora should describe everything but the person.<br/>
+    For a style lora, the lora should include everything but the style or action.<br/>
+    
+    :param prompt: the prompt or None, the prompt can include {prompt} {template} or {person_template} as placeholders
+    :param triggerword: the triggerword (instance prompt) for the lora
+    :param class_prompt: the class_prompt for the lora, an already kown token which the model can associate with your triggerword
+    :param person_lora: define if it should be a lora of a person or not
+    :return: the prompt
+    """
+    if prompt:
+        prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
+        prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
+        prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
+    elif person_lora:
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + (f'Do not describe clothing and accessories and Hair color or hair style. '
+                                                         f'For example do not include "with short hair" or "with long hair" or "with medium hair" or "with long medium hair" in the caption. '
+                                                         f'Do not/never describe \n{PERSON_DESCRIPTION}\n.'
+                                                         f'Also include the {f"triggerword {triggerword}" if triggerword else " "}{f" and the class prompt {class_prompt} " if class_prompt else " "}'
+                                                         f' in the first view words of the caption. '
+                                                         f'For example, when describing a video of a woman in a bathroom, the caption will be "'
+                                                         f'A video of a {triggerword if triggerword else " "}{(" " + class_prompt) if class_prompt else ""} standing '
+                                                         f' in a bathroom, [other details]".'
+                                                         f'{f"The Triggerword {triggerword} should appear at least once at the beginning of the caption. But must not be the start word. But can be the start word." if triggerword else ""}')
+    elif not person_lora:
+        # For a style lora it is better if the user supplies his own prompt
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + PERSON_DESCRIPTION + (f'\nAlso include the class prompt "{class_prompt}" in the first view words of the caption. '
+                                                                              f'For example, when describing a video of a woman in a bathroom, the caption will be "'
+                                                                              f'A video of a {triggerword if triggerword else ""}{(" " + class_prompt) if class_prompt else ""} standing '
+                                                                              f' in a bathroom, [other details]". ')
+    
+    prompt = prompt+'\nInstead of puting "modern indoor setting" put "office" instead. Also always describe tattoos, if there are any.'
+    
+    return prompt
+
 def get_task_prompt(task: str) -> str:
     """Get the appropriate prompt for the given task."""
     prompts = {
@@ -136,56 +204,6 @@ def generate_caption_florence2(
 
         traceback.print_exc()
         return None
-
-
-DEFAULT_PROMPT = """
-You are a professional image annotator. Complete the following captioning task based on the input.
-Answer only with the generated caption for the input. Nothing additional.
-Skip phrases like "There is no visible text" from the output text.
-Focus on the describing task.
-
-Maintain authenticity and accuracy, avoid generalizations.
-Do not describe watermarks like "clideo.com".
-
-"""
-
-
-DESCRIPTOR_TEMPLATE = """
-Use the following template for caption generation:
-[Describe the actors and their poses/positions]
-[Describe the location, furniture, background elements]
-[Describe their actions, where they're looking, what they're doing]
-[Background Style, Camera movement, Camera angle]
-"""
-
-
-PERSON_DESCRIPTION = """
-[Body shape/size, skin color, tattoos and skin details]
-[Hair color and style, eye color, eyebrow shape, lip color, etc]
-[Clothing and accessories]
-"""
-
-def generate_caption_prompt(
-    prompt: str = "",
-    triggerword: str = "woman",
-    person_lora: bool = False,
-) -> str:
-    if prompt:
-        prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
-        prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
-        prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
-    elif person_lora:
-        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + f" Do not describe clothing and accessories and Hair color or style"
-    elif not person_lora:
-        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + PERSON_DESCRIPTION
-
-    prompt = (
-        prompt
-        + f'\nAlways put the triggerword "{triggerword}" at the beggining of the caption.'
-    )
-    
-    return prompt
-
 
 def generate_caption_qwen3(
     model: Qwen3VLForConditionalGeneration,

@@ -1,38 +1,43 @@
 import os
 import av
-import sys
 import torch
+import logging
+import warnings
 import numpy as np
 from PIL import Image
 from pathlib import Path
+
 from VideoInfo import VideoInfo
 from typing import List, TypedDict, Tuple
 
-# add codeformer to system path, to import basicsr
 working_dir: Path = Path.cwd()
-basicsr_path: Path = working_dir / "BasicSR"
-sys.path.append(str(basicsr_path))
-
-import subprocess
-subprocess.run(
-    ["uv", "pip", "uninstall", "basicsr"],
-    capture_output=True,
-    text=True,
-    check=False,
-)
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-torch.backends.cuda.enable_flash_sdp(True)
-torch.backends.cuda.enable_mem_efficient_sdp(True)
 torch_dtype = torch.float32
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# attention configuration
+
+# FlashAttention (must be installed)
+torch.backends.cuda.enable_flash_sdp(True)
+# xformers or native implementation (xformers must be installed)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+# standard PyTorch implementation (slow and uses a lot of memory)
+torch.backends.cuda.enable_math_sdp(True)
+
+# Suppress library logging
+logging.getLogger("basicsr").setLevel(logging.WARNING)
+logging.getLogger("realesrgan").setLevel(logging.WARNING)
+logging.getLogger("gfpgan").setLevel(logging.WARNING)
+# Suppress all torchvision warnings
+warnings.filterwarnings("ignore", module="torchvision")
 
 image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 video_extensions = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".flv", ".wmv", ".m4v"}
 caption_extensions = {".txt"}
 
 class ResultEntry(TypedDict):
-    target_file_path: Path
+    file_path_in_target_dir: Path
     video: Tuple[List[Image.Image], VideoInfo]
     image: Image.Image
     control: Image.Image
@@ -42,7 +47,7 @@ class ResultEntry(TypedDict):
 class SaveImageEntry(TypedDict):
     """
     image_path: str
-    control_image: str → target_image (how image changes, general starting image or the image itself)
+    control_image: str → target_image (starting image)
     caption: str
     """
 
@@ -54,14 +59,12 @@ class SaveImageEntry(TypedDict):
 class SaveVideoEntry(TypedDict):
     """
     video_path: str
-    control_image: str → target_image (how image changes, general starting image or the image itself)
     caption: str
     """
 
     video_path: str
-    control_path: str
     caption: str
-
+    
 
 def get_image_files(directory: Path) -> List[Path]:
     """Get all image files from directory."""
@@ -129,18 +132,18 @@ def save(
         img = result["image"]
         video = result["video"]
         caption = result["caption"]
-        save_path = result["target_file_path"]
+        file_path_in_target_dir = result["file_path_in_target_dir"]
         if img is not None:
-            if not save_path.exists():
-                img.save(save_path, "PNG")
+            if not file_path_in_target_dir.exists():
+                img.save(file_path_in_target_dir, "PNG")
             save_entry = SaveImageEntry(
-                image_path=str(save_path), control_path=str(save_path), caption=caption
+                image_path=str(file_path_in_target_dir), control_path=str(file_path_in_target_dir), caption=caption
             )
         else:
-            if not save_path.exists():
-                save_video(str(save_path), video)
+            if not file_path_in_target_dir.exists():
+                save_video(str(file_path_in_target_dir), video)
             save_entry = SaveVideoEntry(
-                video_path=str(save_path), control_path=str(save_path), caption=caption
+                video_path=str(file_path_in_target_dir), caption=caption # no control is needed for videos
             )
 
         save_entries.append(save_entry)

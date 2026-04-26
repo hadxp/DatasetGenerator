@@ -24,7 +24,14 @@ dependencies = [
     "gfpgan",
     "basicsr",
     "realesrgan",
+    "flash-attn; sys_platform == 'linux'", # requires an NVIDIA GPU
 ]
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]  # Disable build isolation for flash-attn
+
+[tool.uv.extra-build-dependencies]
+flash-attn = [{ requirement = "torch", match-runtime = true }]  # Make torch available at build time
 
 [[tool.uv.index]]
 name="pytorch-cu128"
@@ -39,3 +46,4 @@ url = "https://pypi.org/simple"
 # Tell uv to look for torch, on the custom index
 torch = [ { index = "pytorch-cu128" } ]
 torchvision = [ { index = "pytorch-cu128" } ]
+basicsr = { path = "./BasicSR", editable = true }

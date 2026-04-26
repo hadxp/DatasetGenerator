@@ -112,8 +112,8 @@ def main():
         img = Image.open(str(file)).convert("RGB")
         img = preprocess_image(
             img,
-            upscale_processor,
-            upscale_model,
+            upscale=True,
+            upsample=True,
         )
         img_to_video_with_interpolation(
             image_path=str(file),
