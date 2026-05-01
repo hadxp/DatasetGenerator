@@ -37,13 +37,13 @@ Use the following template for caption generation:
 [Describe the location, furniture, background elements]
 [Describe their actions, where they're looking, what they're doing]
 [Background Style, Camera movement, Camera angle]
+[Clothing and accessories]
 """
 
 
 PERSON_DESCRIPTION = """
 [Body shape/size, skin color, skin details]
 [Hair color and style, eye color, eyebrow shape, lip color, etc]
-[Clothing and accessories]
 """
 
 def generate_caption_prompt(
@@ -67,23 +67,14 @@ def generate_caption_prompt(
         prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
         prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
     elif person_lora:
-        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + (f'Do not describe clothing and accessories and Hair color or hair style. '
-                                                         f'For example do not include "with short hair" or "with long hair" or "with medium hair" or "with long medium hair" in the caption. '
-                                                         f'Do not/never describe \n{PERSON_DESCRIPTION}\n.'
-                                                         f'Also include the {f"triggerword {triggerword}" if triggerword else " "}{f" and the class prompt {class_prompt} " if class_prompt else " "}'
-                                                         f' in the first view words of the caption. '
-                                                         f'For example, when describing a video of a woman in a bathroom, the caption will be "'
-                                                         f'A video of a {triggerword if triggerword else " "}{(" " + class_prompt) if class_prompt else ""} standing '
-                                                         f' in a bathroom, [other details]".'
-                                                         f'{f"The Triggerword {triggerword} should appear at least once at the beginning of the caption. But must not be the start word. But can be the start word." if triggerword else ""}')
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + f'Do not describe \n{PERSON_DESCRIPTION}'
     elif not person_lora:
-        # For a style lora it is better if the user supplies his own prompt
-        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + PERSON_DESCRIPTION + (f'\nAlso include the class prompt "{class_prompt}" in the first view words of the caption. '
-                                                                              f'For example, when describing a video of a woman in a bathroom, the caption will be "'
-                                                                              f'A video of a {triggerword if triggerword else ""}{(" " + class_prompt) if class_prompt else ""} standing '
-                                                                              f' in a bathroom, [other details]". ')
-    
-    prompt = prompt+'\nInstead of puting "modern indoor setting" put "office" instead. Also always describe tattoos, if there are any.'
+        # For a style lora it is better, when the user supplies his own prompt
+        prompt = DEFAULT_PROMPT + DESCRIPTOR_TEMPLATE + PERSON_DESCRIPTION
+        
+    prompt = prompt + (f'\nThe triggerword "{triggerword}" {f" and the class prompt {class_prompt}" if class_prompt else " "} '
+                       f'should appear at least once in the first view words of the caption.'
+                       f'Also put a heavy focus on the prompt up to this point.')
     
     return prompt
 

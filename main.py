@@ -271,7 +271,7 @@ def main():
             prompt = generate_caption_prompt(
                 prompt,
                 triggerword = triggerword if triggerword else "ohwx",
-                class_prompt = class_prompt if class_prompt else None,
+                class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
                 person_lora = person_lora,
             )
 
@@ -307,7 +307,7 @@ def main():
                         os.makedirs(target_dir, exist_ok=True)
                         target_file_path_str = str(file_path_in_target_dir)
                         interpolate_and_scale(
-                            file_path, target_file_path_str, framerate=16
+                            file_path, target_file_path_str, framerate=19
                         )
                     vfe = VideoFrameExtractor(
                         file_path=file_path_in_target_dir,

@@ -20,7 +20,7 @@ def setup_argparse() -> argparse.ArgumentParser:
 def interpolate_and_scale(
     input: str,
     output: str,
-    framerate: int = 16,
+    framerate: int = 19,
 ):
     """
     Interpolate video to target framerate and optionally scale.
