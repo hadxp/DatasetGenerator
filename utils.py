@@ -12,11 +12,30 @@ from typing import List, TypedDict, Tuple
 
 working_dir: Path = Path.cwd()
 
+def get_cuda_free_memory_gb(device: torch.device = None) -> float:
+    if device is None:
+        device = torch.cuda.current_device()
+
+    memory_stats = torch.cuda.memory_stats(device)
+    bytes_active = memory_stats["active_bytes.all.current"]
+    bytes_reserved = memory_stats["reserved_bytes.all.current"]
+    bytes_free_cuda, _ = torch.cuda.mem_get_info(device)
+    bytes_inactive_reserved = bytes_reserved - bytes_active
+    bytes_total_available = bytes_free_cuda + bytes_inactive_reserved
+    return bytes_total_available / (1024**3)
+
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-torch_dtype = torch.float32
+
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# attention configuration
+# Determine optimal dtype based on available memory
+if torch.cuda.is_available():
+    if get_cuda_free_memory_gb() >= 16.0:  # 16GB
+        torch_dtype = torch.bfloat16
+    else:
+        torch_dtype = torch.float16
+else:
+    torch_dtype = torch.float32
 
 # FlashAttention (must be installed)
 torch.backends.cuda.enable_flash_sdp(True)
@@ -148,19 +167,6 @@ def save(
 
         save_entries.append(save_entry)
     return save_entries
-
-
-def get_cuda_free_memory_gb(device: torch.device = None) -> float:
-    if device is None:
-        device = torch.cuda.current_device()
-
-    memory_stats = torch.cuda.memory_stats(device)
-    bytes_active = memory_stats["active_bytes.all.current"]
-    bytes_reserved = memory_stats["reserved_bytes.all.current"]
-    bytes_free_cuda, _ = torch.cuda.mem_get_info(device)
-    bytes_inactive_reserved = bytes_reserved - bytes_active
-    bytes_total_available = bytes_free_cuda + bytes_inactive_reserved
-    return bytes_total_available / (1024**3)
 
 
 def get_detailed_memory_usage(device: torch.device = None):

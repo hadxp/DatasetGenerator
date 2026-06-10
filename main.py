@@ -10,12 +10,10 @@ import os
 import sys
 import json
 import argparse
-import transformers
 from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
-from packaging.version import Version
 from transformers import DynamicCache
 
 import utils
@@ -29,7 +27,6 @@ from utils import (
 )
 from caption_generator import (
     generate_caption,
-    load_cation_model_florence2,
     load_caption_model_qwen3,
     process_caption_text,
     generate_caption_prompt,
@@ -56,33 +53,6 @@ def setup_argparse() -> argparse.ArgumentParser:
         type=str,
         default="",
         help="The Triggerword to replace gender terms in generated captions",
-    )
-    parser.add_argument(
-        "--task",
-        default="more_detailed_caption",
-        choices=[
-            "region_caption",
-            "dense_region_caption",
-            "region_proposal",
-            "caption",
-            "detailed_caption",
-            "more_detailed_caption",
-            "caption_to_phrase_grounding",
-            "referring_expression_segmentation",
-            "ocr",
-            "ocr_with_region",
-            "docvqa",
-            "prompt_gen_tags",
-            "prompt_gen_mixed_caption",
-            "prompt_gen_analyze",
-            "prompt_gen_mixed_caption_plus",
-        ],
-        help="Task type for Florence-2 model",
-    )
-    parser.add_argument(
-        "--text-input",
-        default="",
-        help="Additional text input for specific tasks in caption generation",
     )
     parser.add_argument(
         "--jsonl", action="store_true", default=False, help="Enable jsonl generation"
@@ -160,8 +130,6 @@ def main():
 
     # get the arguments
     triggerword: str = args.triggerword.strip()
-    task: str = args.task
-    text_input: str = args.text_input
     jsonl: bool = args.jsonl
     parquet: bool = args.parquet
     huggingface_repoid: str = args.huggingface_repoid
@@ -259,17 +227,7 @@ def main():
 
             print("\nStarting image / video processing and caption generation...")
 
-            version = Version(transformers.__version__)
-
-            # Load caption model
-            if version <= Version("4.53.1"):
-                model, processor = load_cation_model_florence2()
-            elif version >= Version("4.57.6"):
-                model, processor = load_caption_model_qwen3()
-            else:
-                raise Exception(
-                    f"No valid transformers version present, cannot load caption model, version was {version} valid versions are 4.53.1 or 4.57.6"
-                )
+            model, processor = load_caption_model_qwen3()
 
             # set prompt to generate the caption
             prompt = generate_caption_prompt(
@@ -334,8 +292,6 @@ def main():
                     model=model,
                     processor=processor,
                     source_object=video if is_video else img if is_image else None,
-                    task=task,
-                    text_input=text_input,
                     prompt=prompt,
                     text_encoder_cache=text_encoder_cache,
                 )
