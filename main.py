@@ -16,6 +16,7 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
 from packaging.version import Version
+from transformers import DynamicCache
 
 import utils
 from utils import (
@@ -32,6 +33,7 @@ from caption_generator import (
     load_caption_model_qwen3,
     process_caption_text,
     generate_caption_prompt,
+    encode_system_prompt,
 )
 from parquet import create_parquet, upload_to_hf
 from image_preprocessor import preprocess_image
@@ -144,11 +146,13 @@ def setup_argparse() -> argparse.ArgumentParser:
 
 video: Tuple[List[Image.Image], VideoInfo] = None
 img: Image.Image = None
+text_encoder_cache : DynamicCache = None
 
 
 def main():
     global video
     global img
+    global text_encoder_cache
 
     # Parse command line arguments
     parser = setup_argparse()
@@ -275,6 +279,8 @@ def main():
                 person_lora = person_lora,
             )
 
+            text_encoder_cache = encode_system_prompt(model, processor, prompt)
+
             if show_prompt:
                 print("-----------------------------------")
                 print(prompt)
@@ -324,14 +330,16 @@ def main():
                     )
 
                 # Generate caption
-                caption = generate_caption(
+                caption, new_text_encoder_cache = generate_caption(
                     model=model,
                     processor=processor,
                     source_object=video if is_video else img if is_image else None,
                     task=task,
                     text_input=text_input,
                     prompt=prompt,
+                    text_encoder_cache=text_encoder_cache,
                 )
+                text_encoder_cache = new_text_encoder_cache
 
                 if caption:
                     # Process caption with trigger word replacement

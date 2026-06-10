@@ -46,4 +46,3 @@ url = "https://pypi.org/simple"
 # Tell uv to look for torch, on the custom index
 torch = [ { index = "pytorch-cu128" } ]
 torchvision = [ { index = "pytorch-cu128" } ]
-basicsr = { path = "./BasicSR", editable = true }
