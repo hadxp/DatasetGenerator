@@ -9,12 +9,13 @@ python main.py [dataset_names]
 import os
 import sys
 import json
+
 import argparse
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
 from typing import List, Tuple
-from transformers import DynamicCache
 
 import utils
 from utils import (
@@ -22,15 +23,18 @@ from utils import (
     get_image_files,
     get_video_files,
     save,
-    image_extensions,
     video_extensions,
+    split_list_into_batches,
 )
 from caption_generator import (
-    generate_caption,
+    batch_generate_captions,
     load_caption_model_qwen3,
     process_caption_text,
     generate_caption_prompt,
-    encode_system_prompt,
+)
+from transformers import (
+    Qwen3VLForConditionalGeneration,
+    Qwen3VLProcessor,
 )
 from parquet import create_parquet, upload_to_hf
 from image_preprocessor import preprocess_image
@@ -79,9 +83,6 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="The folder to search the datasets in",
     )
     parser.add_argument(
-        "--no_check", action="store_true", default=False, help="Skips gen.txt check"
-    )
-    parser.add_argument(
         "--prompt",
         type=str,
         default="",
@@ -100,29 +101,27 @@ def setup_argparse() -> argparse.ArgumentParser:
         help="Determines if the generated caption should contain a person description (not in caption = learn)",
     )
     parser.add_argument(
-        "--samples",
-        type=int,
-        default=-1,
-        help=""
-    )
-    parser.add_argument(
         "--class_prompt",
         type=str,
         default="",
         help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=1,
+        help="The batch size for caption generation (default: 1)",
     )
     return parser
 
 
 video: Tuple[List[Image.Image], VideoInfo] = None
 img: Image.Image = None
-text_encoder_cache : DynamicCache = None
 
 
 def main():
     global video
     global img
-    global text_encoder_cache
 
     # Parse command line arguments
     parser = setup_argparse()
@@ -136,16 +135,11 @@ def main():
     huggingface_token: str = args.huggingface_token
     dataset_names_arg: str = args.dataset
     search_dir: str = args.search_dir
-    no_check: bool = args.no_check
     prompt: str = args.prompt
     show_prompt: bool = args.show_prompt
     person_lora: bool = args.person_lora
-    samples: int = args.samples
     class_prompt: str = args.class_prompt
-
-    can_upload_to_huggingface = (
-        huggingface_token is not None and huggingface_repoid != ""
-    )
+    batch_size: int = args.batch
 
     if dataset_names_arg is None:
         print("No dataset(s) specified, cannot continue")
@@ -189,196 +183,174 @@ def main():
 
         # Get image files
         print(f"Scanning for files in {source_dir}...")
-        files = get_image_files(source_dir)
-        if len(files) <= 0:
+        image_files = get_image_files(source_dir)
+        video_files = get_video_files(source_dir)
+            
+        files: List[Path] = []
+        
+        if len(image_files) > 0 and len(video_files) > 0:
+            print("Cannot have mix image and video files in one dataset")
+            sys.exit(1)
+        elif len(image_files) > 0:
+            files = image_files
+        elif len(video_files) > 0:
             files = get_video_files(source_dir)
-
+        
+        is_video_dataset = len(video_files) > 0
+            
         if not files:
             print("No image or video files found in the source directory.")
             sys.exit(1)
+            
+        print(f"Found {len(files)} files.")
 
-        # check the generation file
-        generation_file_path = target_dir / "gen.txt"
+        print("\nStarting image / video processing and caption generation...")
 
-        regernerate_dataset = True
+        model, processor = load_caption_model_qwen3()
 
-        if not no_check:
-            if generation_file_path.exists():
-                # read the file
-                with open(generation_file_path, "r", encoding="utf-8") as f:
-                    saved_count = int(f.read().strip())
-                # check if its content equals the number of images -> if yes skip processing
-                if saved_count == len(files):
-                    regernerate_dataset = False
-            else:
-                # create the file
-                with open(generation_file_path, "w", encoding="utf-8") as f:
-                    f.write(str(len(files)))
+        # set prompt to generate the caption
+        prompt = generate_caption_prompt(
+            prompt,
+            triggerword = triggerword if triggerword else "ohwx",
+            class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
+            person_lora = person_lora,
+        )
 
-        # regenerate the dataset if needed
-        if regernerate_dataset:
-            print(f"Found {len(files)} files.")
+        if show_prompt:
+            print("-----------------------------------")
+            print(prompt)
+            print("-----------------------------------")
+            
+        results: List[ResultEntry] = []
+        
+        print("Proccessing all files...", end="")
+        
+        # sort files
+        sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
+        for image_index, file_path in enumerate(sorted_files):
+            is_video, file_path_in_target_dir, media = process_media_file(target_dir, file_path)
+            result_entry: ResultEntry = {
+                "file_path_in_target_dir": file_path_in_target_dir,
+                "video": media if is_video else None,
+                "image": media if not is_video else None,
+                "control": media if not is_video else None,
+                "caption": None,
+            }
+            results.append(result_entry)
+            
+        print("DONE")
+        
+        print(f"Generating captions with batch {batch_size}...")
+        batch_caption_generation(results, model, processor, prompt, is_video_dataset, batch_size)
+        
+        ex: bool = False
+        
+        for result_entry in results:
+            caption = result_entry["caption"]
+            if caption is None or caption == "":
+                print(f"No caption found for '{result_entry['file_path_in_target_dir'].stem}'")
+                
+        if ex:
+            sys.exit(0)
 
-            results: List[ResultEntry] = []
+        write_captions(dataset_dir, target_dir, results, huggingface_repoid, huggingface_token, parquet, jsonl)
+        
 
-            print("\nStarting image / video processing and caption generation...")
+def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tuple[List[np.ndarray], VideoInfo]] | Tuple[bool, str, Image.Image]:
+    is_video = True if file_path.suffix.lower() in video_extensions else False
 
-            model, processor = load_caption_model_qwen3()
+    file_path_in_target_dir: Path = (
+        target_dir / file_path.name
+    )  # target_dir + filepath with extension
 
-            # set prompt to generate the caption
-            prompt = generate_caption_prompt(
-                prompt,
-                triggerword = triggerword if triggerword else "ohwx",
-                class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
-                person_lora = person_lora,
+    # load the source
+    if is_video:
+        if not file_path_in_target_dir.exists():
+            os.makedirs(target_dir, exist_ok=True)
+            target_file_path_str = str(file_path_in_target_dir)
+            interpolate_and_scale(
+                file_path, target_file_path_str, framerate=19
             )
+        vfe = VideoFrameExtractor(
+            file_path=file_path_in_target_dir,
+            # upscale=False,
+            #upsample=True,
+        )
+        video = vfe.get_video()
+        return is_video, file_path_in_target_dir, video
+    elif not is_video:
+        img = Image.open(file_path).convert("RGB")
+        img = preprocess_image(
+            img,
+            upscale=True,
+            upsample=True,
+        )
+        return is_video, file_path_in_target_dir, img
+    else:
+        print(f"ERROR file {file_path} - not an image or video")
+        sys.exit(0)
+        
+def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForConditionalGeneration, processor: Qwen3VLProcessor, prompt: str, is_video_dataset: bool, batch_size: int) -> None:
+    batches = split_list_into_batches(results, batch_size)
 
-            text_encoder_cache = encode_system_prompt(model, processor, prompt)
+    total_batches = len(results) // batch_size + (1 if len(results) % batch_size != 0 else 0)
+    
+    for idx, batch in tqdm(enumerate(batches), total=total_batches):
+        # Generate caption (after "generate_caption" returns, the "caption" field in each resultentry in the results, will be filled)
+        batch_generate_captions(
+            model=model,
+            processor=processor,
+            results=batch,
+            prompt=prompt,
+            is_video_dataset=is_video_dataset,
+        )
+        
 
-            if show_prompt:
-                print("-----------------------------------")
-                print(prompt)
-                print("-----------------------------------")
+def write_captions(dataset_dir: Path, target_dir: Path, results: List[ResultEntry], huggingface_repoid: str, huggingface_token: str, parquet: bool, jsonl: bool):
+    can_upload_to_huggingface = (
+        huggingface_token is not None and huggingface_repoid != ""
+    )
+    
+    if can_upload_to_huggingface:
+        parquet_path = create_parquet(dataset_dir, results)
+        upload_to_hf(parquet_path, huggingface_repoid, huggingface_token)
+        
+    elif parquet:
+        create_parquet(dataset_dir, results)
 
-            # Load upscale model
-            #upscale_processor, upscale_model = load_upscaler_model()
-            upscale_processor = None
-            upscale_model = None
-
-            print("Generating captions...")
-            successful_processing = 0
-            # sort files
-            sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
-            for image_index, file_path in enumerate(tqdm(sorted_files), 1):
-                is_video = True if file_path.suffix.lower() in video_extensions else False
-                is_image = True if file_path.suffix.lower() in image_extensions else False
-
-                if not is_video and not is_image:
-                    print(f"Skipping file {file_path} - not a image or video")
-                    continue
-
-                file_path_in_target_dir: Path = (
-                    target_dir / file_path.name
-                )  # target_dir + filepath with extension
-
-                # load the source
-                if is_video:
-                    if not file_path_in_target_dir.exists():
-                        os.makedirs(target_dir, exist_ok=True)
-                        target_file_path_str = str(file_path_in_target_dir)
-                        interpolate_and_scale(
-                            file_path, target_file_path_str, framerate=19
-                        )
-                    vfe = VideoFrameExtractor(
-                        file_path=file_path_in_target_dir,
-                        upscale=False,
-                        upsample=True,
-                    )
-                    video = vfe.get_video()
-                elif is_image:
-                    img = Image.open(file_path).convert("RGB")
-                    img = preprocess_image(
-                        img,
-                        upscale=True,
-                        upsample=True,
-                    )
-
-                # Generate caption
-                caption, new_text_encoder_cache = generate_caption(
-                    model=model,
-                    processor=processor,
-                    source_object=video if is_video else img if is_image else None,
-                    prompt=prompt,
-                    text_encoder_cache=text_encoder_cache,
+    elif jsonl:
+        if results:
+            # save the image files in the results list
+            save_entries = save(results, target_dir)
+            # create jsonl
+            jsonl_path = target_dir / "0_dataset.jsonl"
+            with open(jsonl_path, "w", encoding="utf-8") as f:
+                dump = "\n".join(
+                    json.dumps(save_entry, ensure_ascii=False)
+                    for save_entry in save_entries
                 )
-                text_encoder_cache = new_text_encoder_cache
+                f.write(dump)
+            print(f"Wrote {len(results)} results to JSONL: {jsonl_path}")
 
-                if caption:
-                    # Process caption with trigger word replacement
-                    #processed_caption = process_caption_text(caption, triggerword)
-                    processed_caption = caption
-
-                    if samples > 0:
-                        print("-----------------------------------")
-                        print(f"{file_path.name}")
-                        print("-----------------------------------")
-                        print(f"{caption}")
-                        if processed_caption != caption:
-                            print("-----------------------------------")
-                            print(f"{processed_caption}")
-                        print("-----------------------------------")
-                        if image_index == samples:
-                            sys.exit(0)
-
-                    result_entry: ResultEntry = {
-                        "file_path_in_target_dir": file_path_in_target_dir,
-                        "video": video,
-                        "image": img,
-                        "control": img,
-                        "caption": processed_caption,
-                    }
-
-                    results.append(result_entry)
-                    successful_processing += 1
-                    # print(f"  ✓ Processed")
-                else:
-                    print(f"  ✗ Failed to generate caption for {file_path}")
-
-            write_task_handled: bool = False
-
-            if can_upload_to_huggingface and write_task_handled is False:
-                write_task_handled = True
-                parquet_path = create_parquet(dataset_dir, results)
-                upload_to_hf(parquet_path, huggingface_repoid, huggingface_token)
-
-            if parquet and write_task_handled is False:
-                write_task_handled = True
-                create_parquet(dataset_dir, results)
-
-            # save_upscaled_img needs to be true for jsonl, since the jsonl references it
-            if jsonl and write_task_handled is False:
-                write_task_handled = True
-                if results:
-                    print(f"Saving {len(results)} images to: {target_dir}")
-                    # save the image files in the results list
-                    save_entries = save(results, target_dir)
-                    # create jsonl
-                    jsonl_path = target_dir / "0_dataset.jsonl"
-                    print(f"Writing {len(results)} results to JSONL: {jsonl_path}")
-                    with open(jsonl_path, "w", encoding="utf-8") as f:
-                        dump = "\n".join(
-                            json.dumps(save_entry, ensure_ascii=False)
-                            for save_entry in save_entries
-                        )
-                        f.write(dump)
-
-            if not write_task_handled:
-                if results:
-                    # save the image files in the results list
-                    save_entries = save(results, target_dir)
-                    # create text files
-                    print(
-                        f"Creating text (caption) files from {len(results)} results..."
-                    )
-                    for save_entry in save_entries:
-                        text_filename = (
-                            Path(
-                                save_entry["image_path"]
-                                if "image_path" in save_entry
-                                else save_entry["video_path"]
-                            ).stem
-                            + ".txt"
-                        )
-                        text_filepath = os.path.join(target_dir, text_filename)
-                        Path(text_filepath).write_text(
-                            save_entry["caption"], encoding="utf-8"
-                        )
-                        print(f"  Created caption file: {text_filename}")
-
-            # Print summary
-            print("\nProcessing complete!")
-            print(f"Successfully processed {successful_processing}/{len(files)} files")
-
-
+    else:
+        if results:
+            # save the image files in the results list
+            save_entries = save(results, target_dir)
+            # create text files
+            for save_entry in save_entries:
+                text_filename = (
+                    Path(
+                        save_entry["image_path"]
+                        if "image_path" in save_entry
+                        else save_entry["video_path"]
+                    ).stem
+                    + ".txt"
+                )
+                text_filepath = os.path.join(target_dir, text_filename)
+                Path(text_filepath).write_text(
+                    save_entry["caption"], encoding="utf-8"
+                )
+                print(f"  Created caption file: {text_filename}")
+        
 if __name__ == "__main__":
     main()

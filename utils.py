@@ -58,7 +58,7 @@ caption_extensions = {".txt"}
 
 class ResultEntry(TypedDict):
     file_path_in_target_dir: Path
-    video: Tuple[List[Image.Image], VideoInfo]
+    video: Tuple[List[np.ndarray], VideoInfo]
     image: Image.Image
     control: Image.Image
     caption: str
@@ -145,10 +145,10 @@ def save(
     results: List[ResultEntry], target_path: Path
 ) -> List[SaveImageEntry | SaveVideoEntry]:
     """Save images or videos to target directory."""
-    save_entries = []
+    save_entries: List[SaveImageEntry | SaveVideoEntry] = []
     # Create target directory if it does not exist
     target_path.mkdir(parents=True, exist_ok=True)
-    for i, result in enumerate(results, 1):
+    for result in results:
         img = result["image"]
         video = result["video"]
         caption = result["caption"]
@@ -206,3 +206,7 @@ def get_detailed_memory_usage(device: torch.device = None):
         'pytorch_cache': inactive_reserved,
         'usable': usable
     }
+
+def split_list_into_batches(results: List[ResultEntry], batch_size: int) -> List[List[ResultEntry]]:
+    """Splits a list of results into smaller batches of size batch_size."""
+    return [results[i : i + batch_size] for i in range(0, len(results), batch_size)]

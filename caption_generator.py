@@ -1,19 +1,13 @@
 import re
-import sys
 
 import numpy as np
 import torch
-import transformers
 from PIL import Image
 from typing import Tuple, List
 from VideoInfo import VideoInfo
-from packaging.version import Version
-from transformers import DynamicCache
-from utils import get_cuda_free_memory_gb
+from utils import get_cuda_free_memory_gb, ResultEntry
 from utils import torch_device, torch_dtype
 from transformers import (
-    AutoModelForCausalLM,
-    AutoProcessor,
     Qwen3VLForConditionalGeneration,
     Qwen3VLProcessor,
     logging as transformers_logging,
@@ -60,80 +54,91 @@ def generate_caption_prompt(
     
     return prompt
 
-def encode_system_prompt(model, processor, system_prompt: str) -> DynamicCache:
-    """Pre-encode a static system prompt once, reuse for every caption call."""
-    messages = [{"role": "system", "content": system_prompt}]
-    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    inputs = processor(text=text, return_tensors="pt").to(model.device)
-
-    with torch.inference_mode():
-        # Forward pass only — no generation, just encode and grab the cache
-        outputs = model(**inputs, use_cache=True, return_dict=True)
-
-    return outputs.past_key_values  # reuse this on every call
-
 
 def generate_caption_qwen3(
     model: Qwen3VLForConditionalGeneration,
-    processor: AutoProcessor,
-    frames: Tuple[List[np.ndarray], VideoInfo] | Image.Image,
+    processor: Qwen3VLProcessor,
+    results: List[ResultEntry],
     max_new_tokens: int = 512,
     num_beams: int = 1,
     prompt: str = "",
-    text_encoder_cache = None,
-) -> str | None:
+    is_video_dataset: bool = False,
+) -> List[ResultEntry] | None:
     """Generate caption for an image or frames"""
 
     try:
-        if isinstance(frames, Image.Image):
-            image = frames
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": prompt},
-                    ],
-                }
-            ]
-            text_inputs = get_text_inputs(processor, messages)
-            # Build multimodal inputs (image + text)
+        if not is_video_dataset:
+            images: List[Image.Image] = [entry["image"] for entry in results]
+            batch_messages = []
+            for image in images:
+                # 1. Structure messages for each image in the batch
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": image},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ]
+                batch_messages.append(messages)
+
+            # Process text inputs for the entire batch
+            text_inputs = [get_text_inputs(processor, msg) for msg in batch_messages]
+
+            # Build batched multimodal inputs
             inputs = processor(
-                images=frames,
+                images=images,
                 text=text_inputs,
                 return_tensors="pt",
                 padding=True,
             )
-        else:
-            fs, video_info = frames
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "video", "video": fs},
-                        {"type": "text", "text": prompt},
-                    ],
+        elif is_video_dataset:
+            videos: List[Tuple[List[np.ndarray], VideoInfo]] = [entry["video"] for entry in results]
+            
+            batch_videos = []
+            batch_messages = []
+            batch_metadata = []
+
+            for fs, video_info in videos:
+                # Structure messages for each video in the batch
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "video", "video": fs},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ]
+                batch_messages.append(messages)
+
+                # Collect frames
+                batch_videos.append(fs)
+
+                # Create metadata dictionary
+                metadata = {
+                    "fps": video_info.fps,
+                    "duration": video_info.duration,
+                    "width": video_info.width,
+                    "height": video_info.height,
+                    "total_num_frames": len(fs),
+                    # "total_original_frames": video_info.total_frames,
+                    # "codec": video_info.codec,
+                    # "original_resolution": f"{video_info.width}x{video_info.height}",
                 }
-            ]
-            # Create metadata dictionary
-            metadata = {
-                "fps": video_info.fps,
-                "duration": video_info.duration,
-                "width": video_info.width,
-                "height": video_info.height,
-                "total_num_frames": len(fs),
-                # "total_original_frames": video_info.total_frames,
-                # "codec": video_info.codec,
-                # "original_resolution": f"{video_info.width}x{video_info.height}",
-            }
-            text_inputs = get_text_inputs(processor, messages)
-            # Build multimodal inputs (text + video)
+                batch_metadata.append(metadata)
+
+            # Process text inputs for the entire batch
+            text_inputs = [get_text_inputs(processor, msg) for msg in batch_messages]
+
+            # Build batched multimodal inputs
             inputs = processor(
-                videos=[fs],
-                text=text_inputs,
+                videos=batch_videos,  # List of frame lists/tensors
+                text=text_inputs,  # List of text strings/inputs
                 return_tensors="pt",
                 padding=True,
-                video_metadata=metadata,
+                video_metadata=batch_metadata,  # List of metadata dicts
             )
 
         # Move inputs to same device/dtype as model
@@ -154,37 +159,29 @@ def generate_caption_qwen3(
                 use_cache=True,
             )
 
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                num_beams=num_beams,
-                do_sample=False,
-                pad_token_id=processor.tokenizer.eos_token_id,
-                # pad_token_id=processor.tokenizer.pad_token_id,
-                # eos_token_id=processor.tokenizer.eos_token_id,
-                use_cache=True,                                     # enable KV cache during generation
-                past_key_values=text_encoder_cache,          # reuse cached text-encoder output
-                return_dict_in_generate=True,                       # needed to get cache back out
-            )
-
-        # Extract the updated cache for reuse on next call
-        new_text_encoder_cache = generated_ids.past_key_values  # DynamicCache object
-
+        # Extract only the newly generated tokens (skipping the prompt tokens)
         generated_ids_trimmed = [
             out_ids[len(in_ids):]
-            for in_ids, out_ids in zip(inputs["input_ids"], generated_ids.sequences)
+            for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
         ]
 
         del inputs
         torch.cuda.empty_cache()
 
-        generated_text = processor.batch_decode(
+        # Decode the batch into a list of individual string responses
+        generated_captions: List[str] = processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )
 
-        return (generated_text[0] if generated_text else ""), new_text_encoder_cache
+        # Map them back to the original items
+        for index, text in enumerate(generated_captions):
+            result_entry = results[index]
+            #print(f"Setting caption of length {len(text.strip())} for media {result_entry['file_path_in_target_dir'].stem}")
+            result_entry["caption"] = text.strip()
+
+        return results
     except Exception as e:
         print(f"Error processing video: {e}")
         import traceback
@@ -194,7 +191,7 @@ def generate_caption_qwen3(
 
 
 def get_text_inputs(
-    processor: AutoProcessor,
+    processor: Qwen3VLProcessor,
     messages,
 ) -> str:
     # Produce text with image tokens
@@ -202,23 +199,22 @@ def get_text_inputs(
         messages,
         add_generation_prompt=True,
         tokenize=False,
-        return_tensors="pt",
     )
 
 
-def generate_caption(
-    model: AutoModelForCausalLM | Qwen3VLForConditionalGeneration,
-    processor: AutoProcessor | Qwen3VLProcessor,
-    source_object,
-    prompt: str = "",
-    text_encoder_cache : DynamicCache = None,
-) -> Tuple[str, DynamicCache] | None:
+def batch_generate_captions(
+    model: Qwen3VLForConditionalGeneration,
+    processor: Qwen3VLProcessor,
+    results: List[ResultEntry],
+    prompt: str,
+    is_video_dataset: bool,
+) -> List[ResultEntry] | None:
     return generate_caption_qwen3(
         model,
         processor,
-        source_object,
+        results=results,
         prompt=prompt,
-        text_encoder_cache=text_encoder_cache,
+        is_video_dataset=is_video_dataset,
     )
 
 
