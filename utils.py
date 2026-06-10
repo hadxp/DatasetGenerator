@@ -25,6 +25,7 @@ def get_cuda_free_memory_gb(device: torch.device = None) -> float:
     return bytes_total_available / (1024**3)
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+torch.set_float32_matmul_precision('high')
 
 torch_device = "cuda" if torch.cuda.is_available() else "cpu"
 

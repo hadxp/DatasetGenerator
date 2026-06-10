@@ -2,6 +2,17 @@ import os
 import io
 import torch
 from PIL import Image
+
+# Patch basicsr compatibility with newer torchvision (required for old basicsr)
+import torchvision.transforms.functional as F
+import torchvision.transforms
+if not hasattr(torchvision.transforms, 'functional_tensor'):
+    import types
+    ft = types.ModuleType('torchvision.transforms.functional_tensor')
+    ft.rgb_to_grayscale = F.rgb_to_grayscale
+    import sys
+    sys.modules['torchvision.transforms.functional_tensor'] = ft
+
 from gfpgan import GFPGANer
 from utils import working_dir
 from realesrgan import RealESRGANer

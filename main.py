@@ -218,10 +218,6 @@ def main():
         # regenerate the dataset if needed
         if regernerate_dataset:
             print(f"Found {len(files)} files.")
-            # print(f"Using task: {args.task}")
-            # print(f"Using trigger word: {triggerword}")
-            if args.text_input:
-                print(f"Using text input: {args.text_input}")
 
             results: List[ResultEntry] = []
 
