@@ -14,12 +14,10 @@ class VideoFrameExtractor:
     def __init__(
         self,
         file_path: Union[str, Path],
-        upsample: bool = False,
-        upscale: bool = False,
+        preprocess: bool = False,
     ):
         self.file_path = file_path
-        self.upsample = upsample
-        self.upscale = upscale
+        self.preprocess = preprocess
 
     def get_video(self) -> Tuple[List[np.ndarray], VideoInfo]:
         file_path = str(self.file_path)
@@ -112,8 +110,8 @@ class VideoFrameExtractor:
                 pil_img = numpy_to_pil(frame_np)
                 img = preprocess_image(
                     pil_img,
-                    upsample=self.upsample,
-                    upscale=self.upscale,
+                    upsample=self.preprocess,
+                    upscale=self.preprocess,
                     resize=False, # do not resize the frame
                 )
                 np_img = pil_to_numpy(img)

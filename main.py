@@ -223,7 +223,7 @@ def main():
             
         results: List[ResultEntry] = []
         
-        print("Proccessing all files...", end="")
+        print("Preproccessing all files...")
         
         # sort files
         sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
@@ -237,8 +237,6 @@ def main():
                 "caption": None,
             }
             results.append(result_entry)
-            
-        print("DONE")
         
         print(f"Generating captions with batch {batch_size}...")
         batch_caption_generation(results, model, processor, prompt, is_video_dataset, batch_size)
@@ -273,8 +271,7 @@ def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tu
             )
         vfe = VideoFrameExtractor(
             file_path=file_path_in_target_dir,
-            # upscale=False,
-            #upsample=True,
+            preprocess=False,
         )
         video = vfe.get_video()
         return is_video, file_path_in_target_dir, video

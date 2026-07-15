@@ -1,11 +1,12 @@
 import requests
+import sys
 import os
 
 # ================== CONFIG ==================
 TB_URL = "http://192.168.0.30:6006"
 TAGS = ["loss/current", "loss/epoch", "lr/unet"]
 OUTPUT_DIR = "tensorboard_data"
-RUN_NAME = "kdrkitten"
+RUN_NAME = ""
 # ===========================================
 
 all_data = {}
@@ -34,6 +35,8 @@ def main():
     runs_dict = get_runs()
 
     runs = list(runs_dict.keys())
+    
+    RUN_NAME = sys.argv[1]
     
     for run in runs:
         if RUN_NAME in run:
