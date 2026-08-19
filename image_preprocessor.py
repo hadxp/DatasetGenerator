@@ -153,17 +153,17 @@ def upscale_func(
                 # Aggressive cleanup
                 del inputs
                 del pixel_values
-                del outputs
-                del upscaled_tensor
+                if outputs is not None:
+                    del outputs
+                if upscaled_tensor is not None:
+                    del upscaled_tensor
             finally:
                 pass
-    
-            # Clear CUDA cache
-            torch.cuda.empty_cache()
-    
             # Force garbage collection
             import gc
             gc.collect()
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
         finally:
             pass
 

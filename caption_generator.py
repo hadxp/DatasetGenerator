@@ -165,7 +165,14 @@ def generate_caption_qwen3(
             for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
         ]
 
-        del inputs
+        if inputs is not None:
+            del inputs
+        if generated_ids is not None:
+            del generated_ids
+        # Force garbage collection
+        import gc
+        gc.collect()
+        # Clear CUDA cache
         torch.cuda.empty_cache()
 
         # Decode the batch into a list of individual string responses
