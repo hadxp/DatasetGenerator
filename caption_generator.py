@@ -19,6 +19,7 @@ def generate_caption_prompt(
     triggerword: str = "ohwx",
     class_prompt: str = None,
     person_lora: bool = False,
+    add_to_prompt: str = None,
 ) -> str:
     """
     A person lora should describe everything but the person.<br/>
@@ -52,6 +53,8 @@ def generate_caption_prompt(
                        f'If the input is a video or multiple frames descibe the motion, throught the caption. '
                        f'The generated caption should be thorough and include everything described in my templates, described according to the handbook ')
     
+    if add_to_prompt is not None:
+        return prompt + add_to_prompt
     return prompt
 
 

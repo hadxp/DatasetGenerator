@@ -54,6 +54,7 @@ def setup_argparse() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--triggerword",
+        "-tw",
         type=str,
         default="",
         help="The Triggerword to replace gender terms in generated captions",
@@ -69,48 +70,62 @@ def setup_argparse() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--huggingface_repoid",
+        "-hfr",
         type=str,
         default="hadxp/datasets",
         help="Huggingface repoid to upload the parquet file",
     )
     parser.add_argument(
-        "--huggingface_token", type=str, default=None, help="Huggingface token"
+        "--huggingface_token", "-hft", type=str, default=None, help="Huggingface token"
     )
     parser.add_argument(
         "--search_dir",
+        "-sd",
         type=str,
         default=None,
         help="The folder to search the datasets in",
     )
     parser.add_argument(
         "--prompt",
+        "-p",
         type=str,
         default="",
         help='Replaces the default prompt, words like "{prompt}" or "{template}" or "{person_template}" will be replaced',
     )
     parser.add_argument(
         "--show_prompt",
+        "-sp",
         action="store_true",
         default=False,
         help="Shows the prompt before generating",
     )
     parser.add_argument(
         "--person_lora",
+        "-pl",
         action="store_true",
         default=True,
         help="Determines if the generated caption should contain a person description (not in caption = learn)",
     )
     parser.add_argument(
         "--class_prompt",
+        "cp",
         type=str,
         default="",
         help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
     )
     parser.add_argument(
         "--batch",
+        "-b",
         type=int,
         default=1,
         help="The batch size for caption generation (default: 1)",
+    )
+    parser.add_argument(
+        "--add_to_prompt",
+        "-atp",
+        type=str,
+        default="",
+        help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
     )
     return parser
 
@@ -140,6 +155,7 @@ def main():
     person_lora: bool = args.person_lora
     class_prompt: str = args.class_prompt
     batch_size: int = args.batch
+    add_to_prompt: str = args.add_to_prompt
 
     if dataset_names_arg is None:
         print("No dataset(s) specified, cannot continue")
@@ -225,6 +241,7 @@ def main():
             triggerword = triggerword if triggerword else "ohwx",
             class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
             person_lora = person_lora,
+            add_to_prompt=add_to_prompt,
         )
 
         if show_prompt:
@@ -258,6 +275,7 @@ def main():
             caption = result_entry["caption"]
             if caption is None or caption == "":
                 print(f"No caption found for '{result_entry['file_path_in_target_dir'].stem}'")
+                ex = True
                 
         if ex:
             sys.exit(0)
@@ -265,7 +283,7 @@ def main():
         write_captions(dataset_dir, target_dir, results, huggingface_repoid, huggingface_token, parquet, jsonl)
         
 
-def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tuple[List[np.ndarray], VideoInfo]] | Tuple[bool, str, Image.Image]:
+def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tuple[List[np.ndarray], VideoInfo]] | Tuple[bool, Path, Image.Image]:
     is_video = True if file_path.suffix.lower() in video_extensions else False
 
     file_path_in_target_dir: Path = (
@@ -303,7 +321,7 @@ def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForCondit
     total_batches = len(results) // batch_size + (1 if len(results) % batch_size != 0 else 0)
     
     for idx, batch in tqdm(enumerate(batches), total=total_batches):
-        # Generate caption (after "generate_caption" returns, the "caption" field in each resultentry in the results, will be filled)
+        # Generate caption (after "generate_caption" returns, the "caption" field in each result entry in the results, will be filled)
         batch_generate_captions(
             model=model,
             processor=processor,
