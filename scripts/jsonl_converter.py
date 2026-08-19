@@ -5,8 +5,8 @@ import argparse
 from typing import List
 from pathlib import Path
 
-# Add parent to path if needed
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add the parent directory (project root) to sys.path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from utils import (
     image_extensions,

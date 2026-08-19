@@ -1,6 +1,8 @@
 import sys
 import argparse
 from pathlib import Path
+# Add the parent directory (project root) to sys.path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils import get_image_files, get_video_files
 
 def setup_argparse() -> argparse.ArgumentParser:
@@ -51,8 +53,19 @@ def main():
         dataset_name_folder: Path = None
 
         for folder in datasets_path.iterdir():
-            if folder.is_dir() and dataset_name in folder.name:
-                dataset_name_folder = folder
+            if folder.is_dir() and (dataset_name in folder.name):
+                has_underscore_dataset = "_" in dataset_name
+                has_underscore_folder = "_" in folder.name
+
+                if has_underscore_dataset and has_underscore_folder:
+                    # Both contain '_'
+                    dataset_name_folder = folder
+                elif not has_underscore_dataset and not has_underscore_folder:
+                    # Neither contains '_'
+                    dataset_name_folder = folder
+                else:
+                    # One contains a '_' and the other does not
+                    pass
 
         if dataset_name_folder is None:
             raise Exception(f"No dataset named '{dataset_name}' found in directory '{datasets_path}'")
