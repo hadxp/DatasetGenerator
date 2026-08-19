@@ -162,8 +162,19 @@ def main():
         dataset_name_folder: Path = None
 
         for folder in datasets_path.iterdir():
-            if folder.is_dir() and dataset_name in folder.name:
-                dataset_name_folder = folder
+            if folder.is_dir() and (dataset_name in folder.name):
+                has_underscore_dataset = "_" in dataset_name
+                has_underscore_folder = "_" in folder.name
+
+                if has_underscore_dataset and has_underscore_folder:
+                    # Both contain '_'
+                    dataset_name_folder = folder
+                elif not has_underscore_dataset and not has_underscore_folder:
+                    # Neither contains '_'
+                    dataset_name_folder = folder
+                else:
+                    # One contains a '_' and the other does not
+                    pass
 
         if dataset_name_folder is None:
             raise Exception(f"No dataset named '{dataset_name}' found in directory '{datasets_path}'")
@@ -227,7 +238,7 @@ def main():
         
         # sort files
         sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
-        for image_index, file_path in enumerate(sorted_files):
+        for file_path in tqdm(sorted_files):
             is_video, file_path_in_target_dir, media = process_media_file(target_dir, file_path)
             result_entry: ResultEntry = {
                 "file_path_in_target_dir": file_path_in_target_dir,
@@ -279,7 +290,6 @@ def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tu
         img = Image.open(file_path).convert("RGB")
         img = preprocess_image(
             img,
-            upscale=True,
             upsample=True,
         )
         return is_video, file_path_in_target_dir, img

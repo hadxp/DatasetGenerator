@@ -4,6 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 from typing import Tuple, Union
+from numpy_pil_conv import pil_to_numpy
 from upsample import upsample as upsample_func
 from utils import torch_device, torch_dtype, get_detailed_memory_usage
 from transformers import Swin2SRForImageSuperResolution, Swin2SRImageProcessor
@@ -53,13 +54,11 @@ def load_upscaler_model() -> (
 
 def preprocess_image(
     img: Image.Image,
-    upscale: bool = False,
     upsample: bool = False,
     resize: bool = True,
 ) -> Image.Image:
-    return preprocess_image_v3(
+    return preprocess_image_v4(
         image=img,
-        upscale=upscale,
         upsample=upsample,
         resize=resize,
     )
@@ -90,19 +89,19 @@ def resize_image_to_bucket(
     image_width = int(image_width * scale + 0.5)
     image_height = int(image_height * scale + 0.5)
 
-    if scale > 1:
+    if scale != 1:
         image = Image.fromarray(image) if not is_pil_image else image
         image = image.resize((image_width, image_height), Image.Resampling.LANCZOS)
         image = np.array(image)
-    else:
-        image = np.array(image) if is_pil_image else image
-        image = cv2.resize(
-            image, (image_width, image_height), interpolation=cv2.INTER_AREA
-        )
-
+        
     # crop the image to the bucket resolution
     crop_left = (image_width - bucket_width) // 2
     crop_top = (image_height - bucket_height) // 2
+
+    # Ensure image is a numpy array before slicing
+    if isinstance(image, Image.Image):
+        image = pil_to_numpy(image)
+    
     image = image[
         crop_top : crop_top + bucket_height, crop_left : crop_left + bucket_width
     ]
@@ -171,6 +170,79 @@ def upscale_func(
     #print("-----------")
 
     return upscaled_image
+
+
+def preprocess_image_v4(
+    image: Image.Image,
+    upsample: bool = False,
+    resize: bool = True,
+    max_size: int = DEFAULT_MAX_SIZE,
+) -> Image.Image:
+    min_area = 256 * 256
+    max_area = max_size * max_size
+    width, height = image.size
+    
+    if (width * height) < min_area:
+        if upsample:
+            image = upsample_func(image)
+
+    if resize:
+        """Resize image to a suitable resolution"""
+        width_rounded = int((width / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
+        height_rounded = int((height / IMAGE_FACTOR) + 0.5) * IMAGE_FACTOR
+
+        bucket_resos = []
+        if width_rounded * height_rounded < min_area:
+            # Scale up to min area
+            scale_factor = math.sqrt(min_area / (width_rounded * height_rounded))
+            new_width = math.ceil(width * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+            new_height = math.ceil(height * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+
+            # Add to bucket resolutions: default and slight variations for keeping aspect ratio
+            bucket_resos.append((new_width, new_height))
+            bucket_resos.append((new_width + IMAGE_FACTOR, new_height))
+            bucket_resos.append((new_width, new_height + IMAGE_FACTOR))
+        elif width_rounded * height_rounded > max_area:
+            # Scale down to max area
+            scale_factor = math.sqrt(max_area / (width_rounded * height_rounded))
+            new_width = math.floor(width * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+            new_height = math.floor(height * scale_factor / IMAGE_FACTOR) * IMAGE_FACTOR
+
+            # Add to bucket resolutions: default and slight variations for keeping aspect ratio
+            bucket_resos.append((new_width, new_height))
+            bucket_resos.append((new_width - IMAGE_FACTOR, new_height))
+            bucket_resos.append((new_width, new_height - IMAGE_FACTOR))
+        else:
+            # Keep original resolution, but add slight variations for keeping aspect ratio
+            bucket_resos.append((width_rounded, height_rounded))
+            bucket_resos.append((width_rounded - IMAGE_FACTOR, height_rounded))
+            bucket_resos.append((width_rounded, height_rounded - IMAGE_FACTOR))
+            bucket_resos.append((width_rounded + IMAGE_FACTOR, height_rounded))
+            bucket_resos.append((width_rounded, height_rounded + IMAGE_FACTOR))
+
+        # Min/max area filtering
+        bucket_resos = [
+            (w, h) for w, h in bucket_resos if w * h >= min_area and w * h <= max_area
+        ]
+
+        # Select bucket which has the nearest aspect ratio
+        aspect_ratio = width / height
+        bucket_resos.sort(key=lambda x: abs((x[0] / x[1]) - aspect_ratio))
+        bucket_reso = bucket_resos[0]
+
+        # Distribute images across available bucket resolutions
+        num_bucket_resos = len(bucket_resos)
+
+        if num_bucket_resos == 0:
+            # Fallback if no buckets available (shouldn't happen with proper filtering)
+            bucket_reso = (width_rounded, height_rounded)
+
+        # Resize to bucket
+        image_np = resize_image_to_bucket(image, bucket_reso)
+
+        # Convert back to PIL
+        image = Image.fromarray(image_np)
+    return image
 
 
 def preprocess_image_v3(

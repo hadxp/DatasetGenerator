@@ -6,6 +6,7 @@ from PIL import Image
 # Patch basicsr compatibility with newer torchvision (required for old basicsr)
 import torchvision.transforms.functional as F
 import torchvision.transforms
+
 if not hasattr(torchvision.transforms, 'functional_tensor'):
     import types
     ft = types.ModuleType('torchvision.transforms.functional_tensor')
@@ -22,9 +23,16 @@ from basicsr.archs.rrdbnet_arch import RRDBNet
 from basicsr.utils.download_util import load_file_from_url
 
 models = {
-    "realesrgan": {
+    "realesrgan_x4": {
+        "url": "https://huggingface.co/lllyasviel/Annotators/resolve/main/RealESRGAN_x4plus.pth",
+        "dir": f"{working_dir / 'weights'}",
+        "upscale_factor": 4,  # Real-ESRGAN native model scale
+        "filename": "RealESRGAN_x4plus.pth",
+    },
+    "realesrgan_x2": {
         "url": "https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/RealESRGAN_x2plus.pth",
         "dir": f"{working_dir / 'weights'}",
+        "upscale_factor": 2,  # Real-ESRGAN native model scale
         "filename": "RealESRGAN_x2plus.pth",
     },
     "gfpgan_RestoreFormer": {
@@ -48,6 +56,16 @@ def check_ckpts():
 _upsampler_model: GFPGANer = None
 
 def load_upsampler() -> GFPGANer:
+    models_realesrgan = models["realesrgan_x2"]
+    realesrgan_upscale_factor = models_realesrgan["upscale_factor"]
+    models_restoreformer = models["gfpgan_RestoreFormer"]
+    realesrgan_model_path = os.path.join(
+        models_realesrgan["dir"], models_realesrgan["filename"]
+    )
+    restoreformer_path = os.path.join(
+        models_restoreformer["dir"], models_restoreformer["filename"]
+    )
+    arch = (models["gfpgan_RestoreFormer"]["filename"]).replace(".pth", "")
     half = True if torch.cuda.is_available() else False
     model = RRDBNet(
         num_in_ch=3,
@@ -55,27 +73,21 @@ def load_upsampler() -> GFPGANer:
         num_feat=64,
         num_block=23,
         num_grow_ch=32,
-        scale=2, # 1=better for removing artifacts or denoising, 2 = Better for preserving fine details
-    )
-    realesrgan_model_path = os.path.join(
-        models["realesrgan"]["dir"], models["realesrgan"]["filename"]
+        #scale=2, # 1=better for removing artifacts or denoising, 2 = Better for preserving fine details
+        scale=realesrgan_upscale_factor,
     )
     upsampler = RealESRGANer(
-        scale=2,
-        model_path=realesrgan_model_path,  # ../CodeFormer/weights/realesrgan/RealESRGAN_x2plus.pth",
+        scale=realesrgan_upscale_factor,
+        model_path=realesrgan_model_path,
         model=model,
         tile=400,
         tile_pad=40,
         pre_pad=0,
         half=half,
     )
-    restoreformer_path = os.path.join(
-        models["gfpgan_RestoreFormer"]["dir"], models["gfpgan_RestoreFormer"]["filename"]
-    )
-    arch = (models["gfpgan_RestoreFormer"]["filename"]).replace(".pth", "")
     restorer = GFPGANer(
         model_path=restoreformer_path,
-        upscale=1,
+        upscale=realesrgan_upscale_factor,
         arch=arch,
         channel_multiplier=2,
         bg_upsampler=upsampler)
@@ -87,15 +99,30 @@ def load_upsampler() -> GFPGANer:
 
 
 def upsample(img: Image.Image) -> Image.Image:
-    # Suppress RealESRGAN tile printing
-    with redirect_stdout(io.StringIO()):
-        if _upsampler_model is None:
-            check_ckpts()
-            load_upsampler()
-        cropped_faces, restored_faces, restored_img = _upsampler_model.enhance(
-            pil_to_numpy(img),
-            has_aligned=False,
-            paste_back=True,
-            weight=0.5 # Balance between quality and identity
-        )
-        return numpy_to_pil(restored_img)
+    def retry_fn():
+        # Suppress RealESRGAN tile printing
+        with redirect_stdout(io.StringIO()):
+            if _upsampler_model is None:
+                check_ckpts()
+                load_upsampler()
+            cropped_faces, restored_faces, restored_img = _upsampler_model.enhance(
+                pil_to_numpy(img),
+                has_aligned=False,
+                paste_back=True,
+                weight=0.5 # Balance between quality and identity
+            )
+            return numpy_to_pil(restored_img)
+    
+    try:
+        return retry_fn()
+    except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
+
+        # Wait a bit for memory to be freed
+        import time
+        time.sleep(0.5)
+
+        return retry_fn()
+        
