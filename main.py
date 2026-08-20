@@ -108,7 +108,7 @@ def setup_argparse() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--class_prompt",
-        "cp",
+        "-cp",
         type=str,
         default="",
         help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
@@ -242,6 +242,7 @@ def main():
             class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
             person_lora = person_lora,
             add_to_prompt=add_to_prompt,
+            is_video_dataset=is_video_dataset,
         )
 
         if show_prompt:
@@ -283,7 +284,7 @@ def main():
         write_captions(dataset_dir, target_dir, results, huggingface_repoid, huggingface_token, parquet, jsonl)
         
 
-def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tuple[List[np.ndarray], VideoInfo]] | Tuple[bool, Path, Image.Image]:
+def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, Path, Tuple[List[np.ndarray], VideoInfo]] | Tuple[bool, Path, Image.Image]:
     is_video = True if file_path.suffix.lower() in video_extensions else False
 
     file_path_in_target_dir: Path = (
@@ -315,7 +316,7 @@ def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, str, Tu
         print(f"ERROR file {file_path} - not an image or video")
         sys.exit(0)
         
-def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForConditionalGeneration, processor: Qwen3VLProcessor, prompt: str, is_video_dataset: bool, batch_size: int) -> None:
+def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForConditionalGeneration, processor: Qwen3VLProcessor, prompt: str, is_video_dataset: bool, batch_size: int, batch_samples: int = 1) -> None:
     batches = split_list_into_batches(results, batch_size)
 
     total_batches = len(results) // batch_size + (1 if len(results) % batch_size != 0 else 0)
@@ -329,6 +330,9 @@ def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForCondit
             prompt=prompt,
             is_video_dataset=is_video_dataset,
         )
+        if idx+1 == batch_samples:
+            print("\n-------------------\n" + batch[idx]['caption'])
+            sys.exit(0)
         
 
 def write_captions(dataset_dir: Path, target_dir: Path, results: List[ResultEntry], huggingface_repoid: str, huggingface_token: str, parquet: bool, jsonl: bool):
