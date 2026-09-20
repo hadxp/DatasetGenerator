@@ -37,25 +37,27 @@ def generate_caption_prompt(
         prompt = re.sub(r"\{prompt\}", DEFAULT_PROMPT, prompt)
         prompt = re.sub(r"\{template\}", DESCRIPTOR_TEMPLATE, prompt)
         prompt = re.sub(r"\{person_template\}", PERSON_DESCRIPTION, prompt)
-    elif person_lora:
-        # caption everything but the person
-        prompt = (DEFAULT_PROMPT +
-                  f'Describe, template:\n{DESCRIPTOR_TEMPLATE}\n' +
-                  f'Do not describe, template:\n{PERSON_DESCRIPTION}\n')
-    elif not person_lora:
-        # For a style lora it is better, when the user supplies, a prompt, otherwise everything is captioned (nothing is learned)
-        prompt = (DEFAULT_PROMPT +
-                  f'Describe, template:\n{DESCRIPTOR_TEMPLATE}{PERSON_DESCRIPTION}')
-
-    if is_video_dataset:
-        prompt = prompt + "Describe the motion."
-    prompt = prompt + (f'\nThe triggerword "{triggerword}{f" {class_prompt}" if class_prompt else ""}" '
-                       f'must appear at least once in the first view words of the caption. '
-                       f'Never include ":".'
-                       f'Put heavy focus on the describing task, the caption should be short and not overly descriptive, but long enough to mention everything described, as the goal is lora training.')
+    else:
+        if person_lora:
+            # caption everything but the person
+            prompt = (DEFAULT_PROMPT +
+                      f'\nDescribe:{DESCRIPTOR_TEMPLATE}\n' +
+                      f'Do not ever describe:{PERSON_DESCRIPTION}\n')
+        elif not person_lora:
+            # For a style lora it is better, when the user supplies, a prompt, otherwise everything is captioned (nothing is learned)
+            prompt = (DEFAULT_PROMPT +
+                      f'\nDescribe:\n{DESCRIPTOR_TEMPLATE}{PERSON_DESCRIPTION}')
     
-    if add_to_prompt is not None:
-        return prompt + add_to_prompt
+        if is_video_dataset:
+            prompt = prompt + "Describe the motion."
+        prompt = prompt + (f'\nThe triggerword "{triggerword}{f" {class_prompt}" if class_prompt else ""}" '
+                           f'must appear at least once in the first view words of the caption. '
+                           f'Never include ":".'
+                           f'Put heavy focus on the describing task, the caption should be short and not overly descriptive, but long enough to mention everything described, as the goal is lora training.')
+    
+        if add_to_prompt is not None:
+            return prompt + add_to_prompt
+        
     return prompt
 
 
@@ -306,13 +308,10 @@ def load_caption_model_qwen3() -> Tuple[
         # Set model to eval mode
         model.eval()
 
-        # Optional: compile for performance (PyTorch 2.0+)
-        if hasattr(torch, "compile"):
-            model = torch.compile(model)
-            print("Model compiled with torch.compile()")
+        # Optional: compile for performance
+        model = torch.compile(model)
 
-        print(f"Model loaded successfully on device: {model.device}")
-        print(f"Using dtype: {torch_dtype}")
+        print(f"Model loaded successfully on device: {model.device} / Using dtype: {torch_dtype}")
 
         return model, processor
     except Exception as e:
@@ -343,4 +342,5 @@ DESCRIPTOR_TEMPLATE = """
 PERSON_DESCRIPTION = """
 [Body shape, size, skin color, skin details]
 [Hair color, hair style, eye color, eyebrow shape, lip color, jaw shape]
+[Nose shape, overall face shape/structure]
 """

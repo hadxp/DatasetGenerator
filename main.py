@@ -127,6 +127,13 @@ def setup_argparse() -> argparse.ArgumentParser:
         default="",
         help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
     )
+    parser.add_argument(
+        "--batch_samples",
+        "-bs",
+        type=int,
+        default=-1,
+        help="A token which is already known by the model, to properly associate the triggerword (eg. if your image shows a girl, the class prompt will be girl)",
+    )
     return parser
 
 
@@ -156,6 +163,7 @@ def main():
     class_prompt: str = args.class_prompt
     batch_size: int = args.batch
     add_to_prompt: str = args.add_to_prompt
+    batch_samples: int = args.batch_samples
 
     if dataset_names_arg is None:
         print("No dataset(s) specified, cannot continue")
@@ -238,8 +246,8 @@ def main():
         # set prompt to generate the caption
         prompt = generate_caption_prompt(
             prompt,
-            triggerword = triggerword if triggerword else "ohwx",
-            class_prompt = class_prompt if class_prompt else "person" if person_lora else None,
+            triggerword = triggerword,
+            class_prompt = class_prompt,
             person_lora = person_lora,
             add_to_prompt=add_to_prompt,
             is_video_dataset=is_video_dataset,
@@ -255,8 +263,10 @@ def main():
         print("Preproccessing all files...")
         
         # sort files
-        sorted_files = sorted(files, key=lambda x: int(x.stem.split('_')[0]))
-        for file_path in tqdm(sorted_files):
+        #counter = 1
+        #sorted_files = sorted(files, key=lambda x: int(x.stem.split('_' if '_' in x.stem else ++counter)[0]))
+        
+        for file_path in tqdm(files):
             is_video, file_path_in_target_dir, media = process_media_file(target_dir, file_path)
             result_entry: ResultEntry = {
                 "file_path_in_target_dir": file_path_in_target_dir,
@@ -268,7 +278,7 @@ def main():
             results.append(result_entry)
         
         print(f"Generating captions with batch {batch_size}...")
-        batch_caption_generation(results, model, processor, prompt, is_video_dataset, batch_size)
+        batch_caption_generation(results, model, processor, prompt, is_video_dataset, batch_size, batch_samples=batch_samples)
         
         ex: bool = False
         
@@ -316,11 +326,12 @@ def process_media_file(target_dir: Path, file_path: Path) -> Tuple[bool, Path, T
         print(f"ERROR file {file_path} - not an image or video")
         sys.exit(0)
         
-def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForConditionalGeneration, processor: Qwen3VLProcessor, prompt: str, is_video_dataset: bool, batch_size: int, batch_samples: int = 1) -> None:
+def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForConditionalGeneration, processor: Qwen3VLProcessor, prompt: str, is_video_dataset: bool, batch_size: int, batch_samples: int = -1) -> None:
     batches = split_list_into_batches(results, batch_size)
 
     total_batches = len(results) // batch_size + (1 if len(results) % batch_size != 0 else 0)
     
+    batch_num = 0
     for idx, batch in tqdm(enumerate(batches), total=total_batches):
         # Generate caption (after "generate_caption" returns, the "caption" field in each result entry in the results, will be filled)
         batch_generate_captions(
@@ -330,9 +341,12 @@ def batch_caption_generation(results: List[ResultEntry], model: Qwen3VLForCondit
             prompt=prompt,
             is_video_dataset=is_video_dataset,
         )
-        if idx+1 == batch_samples:
-            print("\n-------------------\n" + batch[idx]['caption'])
-            sys.exit(0)
+        # TODO: this only respects a batch_size of 1
+        if batch_samples > 0 and (caption := batch[0].get('caption')) is not None:
+            print("\n-------------------\n" + caption)
+            batch_num += 1
+            if batch_num == batch_samples:
+                sys.exit(0)
         
 
 def write_captions(dataset_dir: Path, target_dir: Path, results: List[ResultEntry], huggingface_repoid: str, huggingface_token: str, parquet: bool, jsonl: bool):
