@@ -18,6 +18,7 @@ def setup_argparse() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--search_dir",
+        "-sd",
         type=str,
         default=None,
         help="The folder to search the datasets in",
@@ -89,10 +90,28 @@ def main():
         if not files:
             print("No image or video files found in the source directory.")
             sys.exit(1)
-            
-        for i, file in enumerate(files, start=1):
-            new_file_name = f"{i}{file.suffix}"
-            file.rename(file.parent / new_file_name)
+
+        rename_log_path = files[0].parent / "rename_log.txt"
+        logs = ""
+
+        counter = 1
+        for file in files:
+            if file.is_file():
+                if not file.stem.isdigit():
+                    target_path = file.parent / f"{counter}{file.suffix}"
+                    while target_path.is_file() and target_path.exists():
+                        counter += 1
+                        continue
+                    logs += f"'{file.stem}' -> '{target_path.name}'\n"
+                    print(f"Renaming '{file.name}' to '{target_path.name}'")
+                    file.rename(target_path)
+                    counter += 1
+                else:
+                    print(f"Skipping '{file.name}' (already numeric)")
+                 
+        if logs != "":
+            with open(rename_log_path, "a") as f:
+                f.write(logs)
 
 if __name__ == "__main__":
     main()
